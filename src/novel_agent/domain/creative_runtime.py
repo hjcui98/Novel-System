@@ -161,6 +161,9 @@ RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE = (
 )
 
 OPERATOR_PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.operator-plan-review+json"
+DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE = (
+    "application/vnd.novel-agent.draft-revision-directive+json"
+)
 
 
 class OperatorReviewFinding(DomainModel):
@@ -544,6 +547,7 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
 
 __all__ = [
     "OPERATOR_PLAN_REVIEW_MEDIA_TYPE",
+    "DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE",
     "RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE",
     "RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE",
     "AcceptanceCommand",

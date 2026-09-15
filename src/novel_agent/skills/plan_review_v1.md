@@ -5,6 +5,13 @@ comparison, provenance, and unresolved Memory gaps. Preserve sound decisions.
 Issue at most one bounded revision direction and escalate material author
 tradeoffs as HUMAN_REQUIRED.
 
+For obligation ownership, treat `owner_ids` as the canonical narrative subjects
+whose continuing state must be tracked to decide setup, progress, and payoff. A
+grantor, teacher, information holder, location, or incidental participant is not an
+owner unless that entity's own continuing state is part of the obligation. Verify the
+binding against trusted World/parent evidence. Repeated owners are valid and are never
+by themselves a reason to demand role diversity.
+
 For ARC_VOLUME, perform a cross-item repetition audit. Compare same-named narrative
 slots (especially `midpoint_reversal`, `volume_climax`, and `ending_state`) across
 volumes. If the same reveal, event result, capability jump, antagonist mechanism,

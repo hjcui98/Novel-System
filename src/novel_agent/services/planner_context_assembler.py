@@ -77,20 +77,22 @@ class PlannerContextAssembler:
             ):
                 raise PlannerContextAssemblyError("Planner Memory context basis mismatch")
 
+        controlled_revision = request.revision_parent_proposal_ref is not None
         mandatory: list[PlannerContextItem] = []
         optional: list[PlannerContextItem] = []
         graph_refs: dict[ArtifactId, ArtifactRef] = {}
         expansion_refs: list[ArtifactRef] = []
-        for index, artifact in enumerate(request.author_intent_artifacts):
-            mandatory.append(
-                self._artifact_item(
-                    StableId(f"planner-context.author.{index}"),
-                    PlannerContextSection.AUTHOR_INTENT,
-                    artifact,
-                    protected=True,
-                    mandatory=True,
+        if not controlled_revision:
+            for index, artifact in enumerate(request.author_intent_artifacts):
+                mandatory.append(
+                    self._artifact_item(
+                        StableId(f"planner-context.author.{index}"),
+                        PlannerContextSection.AUTHOR_INTENT,
+                        artifact,
+                        protected=True,
+                        mandatory=True,
+                    )
                 )
-            )
         for index, override in enumerate(request.explicit_author_overrides):
             if not override.strip():
                 continue
@@ -105,7 +107,7 @@ class PlannerContextAssembler:
                 )
             )
         author_constraint_root_ref: ArtifactRef | None = None
-        if request.project_profile_ref is not None:
+        if request.project_profile_ref is not None and not controlled_revision:
             mandatory.append(self._project_profile_item(request.project_profile_ref))
             author_constraint_root_ref = self._author_constraint_item(
                 request,
@@ -113,7 +115,7 @@ class PlannerContextAssembler:
                 horizon_start=inquiry.horizon_start,
                 horizon_end=inquiry.horizon_end,
             )
-        if request.accepted_plan_ref is not None:
+        if request.accepted_plan_ref is not None and not controlled_revision:
             mandatory.append(self._accepted_plan_item(request, request.accepted_plan_ref))
         for goal in inquiry.goal_proposals:
             mandatory.append(
@@ -357,7 +359,15 @@ class PlannerContextAssembler:
                 source_artifact_refs=(artifact,),
             )
 
-        if request.horizon_start is None or request.horizon_end is None:
+        if request.task.mode is AgentMode.CHAPTER_SET:
+            # A ChapterSet task owns the current horizon's ChapterSet/Chapter
+            # projection.  Feeding the already-committed same-level and child
+            # nodes back as protected input makes stale projections constrain
+            # their own replacement (and grows monotonically on every repair).
+            # Only the accepted parent hierarchy is authoritative here.
+            goals = ()
+            nodes = tuple(node for node in plan.nodes if self._is_chapter_set_parent(node, request))
+        elif request.horizon_start is None or request.horizon_end is None:
             goals = plan.chapter_goals
             nodes = plan.nodes
         else:
@@ -431,6 +441,26 @@ class PlannerContextAssembler:
             mandatory=True,
             token_count=self._tokens(text),
             source_artifact_refs=(artifact,),
+        )
+
+    @staticmethod
+    def _is_chapter_set_parent(node: PlanNode, request: PlanningLoopRequest) -> bool:
+        level = node.plan_level
+        if level is None:
+            try:
+                level = PlanLevel(node.node_type)
+            except ValueError:
+                return False
+        if level is PlanLevel.STORY:
+            return True
+        if level is not PlanLevel.ARC_VOLUME:
+            return False
+        if request.horizon_start is None or request.horizon_end is None:
+            return True
+        if node.chapter_start is None or node.chapter_end is None:
+            return False
+        return not (
+            node.chapter_end < request.horizon_start or node.chapter_start > request.horizon_end
         )
 
     def _committed_chapter(self, request: PlanningLoopRequest) -> int:

@@ -32,7 +32,12 @@ from novel_agent.domain.ids import (
     StableId,
     TaskId,
 )
-from novel_agent.domain.memory import ObligationKind, ObligationStatus, WorldRootDocument
+from novel_agent.domain.memory import (
+    ObligationKind,
+    ObligationStatus,
+    PlanObligation,
+    WorldRootDocument,
+)
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -195,6 +200,55 @@ def test_a_declaration_keeps_its_owner_window_and_deadline() -> None:
     assert obligation.owner_ids == (StableId("entity.bootstrap.1"),)
     assert (obligation.target_chapter_start, obligation.target_chapter_end) == (201, 250)
     assert obligation.due_chapter == 260
+
+
+def test_verified_composed_revision_updates_existing_obligation_without_resetting_state() -> None:
+    planner = _materializer()
+    obligation_id = StableId("obligation.vol_02.0.objective")
+    current = _world().model_copy(
+        update={
+            "obligations": (
+                PlanObligation(
+                    obligation_id=obligation_id,
+                    kind=ObligationKind.OBJECTIVE,
+                    description="内府资格推进",
+                    status=ObligationStatus.RESOLVED,
+                ),
+            )
+        }
+    )
+    proposal = _proposal(
+        (
+            _item(
+                "vol_02",
+                {
+                    "plan_level": "arc_volume",
+                    "obligation_declarations": [
+                        {
+                            "kind": "objective",
+                            "description": "内府资格推进",
+                            "owner_ids": ["entity.bootstrap.1"],
+                        }
+                    ],
+                },
+            ),
+        )
+    )
+
+    with pytest.raises(CandidateMaterializationError, match="conflicts with existing"):
+        planner._bind_obligation_declarations(current, proposal)
+
+    updated, ref, _bindings = planner._bind_obligation_declarations(
+        current,
+        proposal,
+        allow_existing_revisions=True,
+    )
+
+    assert ref is not None
+    assert len(updated.obligations) == 1
+    revised = updated.obligations[0]
+    assert revised.owner_ids == (StableId("entity.bootstrap.1"),)
+    assert revised.status is ObligationStatus.RESOLVED
 
 
 def test_a_declaration_that_resolves_or_renames_itself_is_refused() -> None:

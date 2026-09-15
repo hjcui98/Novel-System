@@ -12,7 +12,7 @@ from novel_agent.domain.creative_runtime import (
     CreativeRunTerminal,
 )
 from novel_agent.domain.ids import TaskId
-from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
+from novel_agent.domain.runtime import FailureClass, TaskKind, TaskPurpose, TaskRecord, TaskStatus
 from novel_agent.domain.stage5_evaluation import Stage5VerticalRunReport, VerticalRunStatus
 from novel_agent.ports.creative_runtime import RuntimeTaskReader
 from novel_agent.runtime.creative_dispatcher import CreativeDispatcher
@@ -181,6 +181,19 @@ class VerticalCreativeRunner:
                     and task.status is TaskStatus.SUCCEEDED
                 )
                 or task.status is TaskStatus.BUDGET_REVIEW
+                or (
+                    task.kind is TaskKind.DRAFT_CANDIDATE
+                    and task.status is TaskStatus.BLOCKED
+                    and task.block_cause == FailureClass.LEAF_REVIEW_REQUIRED.value
+                )
+                # A previous runtime version could persist an automatic editorial
+                # retry as READY while pointing it at the superseded failed task.
+                # Let the runtime repair that durable false-READY boundary before
+                # the dispatcher evaluates dependencies.
+                or (
+                    task.kind is TaskKind.DRAFT_CANDIDATE
+                    and task.status in {TaskStatus.READY, TaskStatus.WAITING_RETRY}
+                )
             )
             if recoverable and not task.superseded:
                 recovered = recover_boundary(task.task_id)
@@ -234,6 +247,17 @@ class VerticalCreativeRunner:
         return any(
             not task.superseded
             and not cls._is_background(task)
+            # A rejected acceptance is durably represented as CANCELLED.  It is
+            # historical branch evidence, not an operational cancellation of the
+            # run.  Counting every such receipt as a live blocker prevents the
+            # vertical runner from dispatching the replacement generation that the
+            # rejection created.  Explicit operator cancellation remains blocking
+            # because it sets cancel_requested.
+            and not (
+                task.kind in {TaskKind.PLAN_ACCEPTANCE, TaskKind.DRAFT_ACCEPTANCE}
+                and task.status is TaskStatus.CANCELLED
+                and not task.cancel_requested
+            )
             and task.status in {TaskStatus.BLOCKED, TaskStatus.FAILED, TaskStatus.CANCELLED}
             for task in tasks
         )
@@ -242,7 +266,7 @@ class VerticalCreativeRunner:
     def _has_runnable_work(tasks: tuple[TaskRecord, ...]) -> bool:
         now = datetime.now(UTC)
         return any(
-            task.status is TaskStatus.READY
+            task.status in {TaskStatus.READY, TaskStatus.WAITING_RETRY}
             and not task.paused
             and not task.superseded
             and task.current_attempt_id is None

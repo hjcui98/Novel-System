@@ -82,7 +82,7 @@ from novel_agent.domain.stage2 import (
     RetrievalBudget,
     SkillContractRef,
 )
-from novel_agent.domain.world import PlanNode, StoryTime
+from novel_agent.domain.world import PlanLevel, PlanNode, StoryTime
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.planner_context_assembler import PlannerContextAssembler
 from novel_agent.services.planning_inquiry_need_generation import (
@@ -1077,7 +1077,7 @@ def test_post_genesis_context_preserves_graph_expansion_diversity_and_budget(
         )
 
 
-def test_planner_context_projects_rolling_plan_and_profile_before_hard_window(
+def test_chapter_set_context_projects_parent_plan_and_excludes_stale_owned_projection(
     tmp_path: Path,
 ) -> None:
     repo = _repo(tmp_path)
@@ -1087,14 +1087,28 @@ def test_planner_context_projects_rolling_plan_and_profile_before_hard_window(
         node_type="story",
         title="Long direction",
         summary="Keep the tower conflict central.",
+        plan_level=PlanLevel.STORY,
+    )
+    arc_node = PlanNode(
+        plan_node_id=StableId("plan.arc"),
+        node_type="arc_volume",
+        title="Tower volume",
+        summary="The first volume owns the tower conflict.",
+        parent_id=root_node.plan_node_id,
+        plan_level=PlanLevel.ARC_VOLUME,
+        chapter_start=1,
+        chapter_end=50,
     )
     near_node = PlanNode(
         plan_node_id=StableId("plan.near"),
         node_type="chapter_set",
         title="Near obligation",
         summary="Resolve the injured arm constraint.",
-        parent_id=root_node.plan_node_id,
+        parent_id=arc_node.plan_node_id,
         obligation_ids=(StableId("obligation.near"),),
+        plan_level=PlanLevel.CHAPTER_SET,
+        chapter_start=21,
+        chapter_end=23,
     )
     far_node = PlanNode(
         plan_node_id=StableId("plan.far"),
@@ -1103,11 +1117,14 @@ def test_planner_context_projects_rolling_plan_and_profile_before_hard_window(
         summary="A distant arc.",
         parent_id=root_node.plan_node_id,
         obligation_ids=(StableId("obligation.far"),),
+        plan_level=PlanLevel.CHAPTER_SET,
+        chapter_start=99,
+        chapter_end=101,
     )
     plan = PlanRootDocument(
         root_hash=HASH,
         schema_version=VERSION,
-        nodes=(root_node, near_node, far_node),
+        nodes=(root_node, arc_node, near_node, far_node),
         chapter_goals=(
             ChapterGoal(
                 goal_id=StableId("goal.chapter.21"),
@@ -1184,9 +1201,10 @@ def test_planner_context_projects_rolling_plan_and_profile_before_hard_window(
     )
 
     rendered = package.rendered_context
-    assert "Enter the tower" in rendered
-    assert "Near obligation" in rendered
+    assert "Tower volume" in rendered
     assert "Long direction" in rendered
+    assert "Enter the tower" not in rendered
+    assert "Near obligation" not in rendered
     assert "FAR_GOAL_SHOULD_NOT_BE_RENDERED" not in rendered
     assert "FAR_PLAN_SHOULD_NOT_BE_RENDERED" not in rendered
     assert "third person limited" in rendered

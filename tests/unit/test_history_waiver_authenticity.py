@@ -91,6 +91,47 @@ def test_host_first_chapter_waiver_on_chapter_one_is_accepted() -> None:
     assert not any("HISTORY_WAIVER" in issue.summary for issue in review.issues)
 
 
+def test_future_event_history_finding_authorizes_history_field_not_coverage() -> None:
+    payload = json.dumps(
+        {
+            "items": [
+                {
+                    "item_id": "plan.chapter.2",
+                    "kind": "chapter_goal",
+                    "payload": {
+                        "chapter_index": 2,
+                        "summary": "陆沉舟进入斩星府外府。",
+                        "history_retrieval": {
+                            "requirement": "REQUIRED",
+                            "needs": [
+                                {
+                                    "kind": "causal_history",
+                                    "query": "陆沉舟如何进入斩星府外府？",
+                                    "entity_ids": ["entity.bootstrap.1"],
+                                    "predicates": ["organization_entry"],
+                                    "source_chapter_end": 1,
+                                }
+                            ],
+                        },
+                    },
+                }
+            ]
+        }
+    )
+    review = apply_host_plan_review_constraints(
+        _draft(),
+        target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+        target_payload=payload,
+        mode=AgentMode.CHAPTER_SET,
+    )
+
+    issue = next(
+        issue for issue in review.issues if "HISTORY_NEED_TARGETS_FUTURE_EVENT" in issue.summary
+    )
+    assert issue.field_path == "history_retrieval"
+    assert issue.authorized_target_item_ids == (issue.affected_item_ids[0],)
+
+
 def test_decision_helper_reports_whether_the_waiver_is_host_issued() -> None:
     assert HistoryRetrievalDecision.first_chapter_waiver().waiver_is_host_issued is True
 

@@ -470,6 +470,45 @@ def test_local_repair_payload_requires_every_blocking_issue_to_be_addressed(
     assert len(payload["issues"]) == 2
 
 
+def test_local_repair_retries_when_one_reviewed_issue_span_is_unchanged(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    first_quote = "石门向里退开"
+    second_quote = "旧刻痕"
+    harness = _harness(
+        tmp_path,
+        _multi_local_review(first_quote, second_quote),
+        monkeypatch,
+    )
+    report = asyncio.run(harness.service.review(harness.review_input, _request("multi-review")))
+    original = harness.artifacts.read_verified(harness.review_input.draft.text_artifact).decode()
+    incomplete = original.replace(first_quote, "石门向外退开", 1)
+    complete = incomplete.replace(second_quote, "新刻痕", 1)
+    responses = iter(
+        (
+            json.dumps({"repaired_text": incomplete}, ensure_ascii=False),
+            json.dumps({"repaired_text": complete}, ensure_ascii=False),
+        )
+    )
+
+    async def generate(request: ModelRequest):
+        harness.endpoint.response_text = next(responses)
+        return await FakeModelEndpoint.generate(harness.endpoint, request)
+
+    monkeypatch.setattr(harness.endpoint, "generate", generate)
+    harness.endpoint.requests.clear()
+
+    child = asyncio.run(
+        harness.service.repair(harness.review_input, report, _request("multi-repair"))
+    )
+
+    assert harness.artifacts.read_verified(child.text_artifact).decode() == complete
+    assert len(harness.endpoint.requests) == 2
+    assert harness.endpoint.requests[1].request_id.root.endswith(".boundary-retry1")
+    assert "left at least one allowed issue span unchanged" in harness.endpoint.requests[1].prompt
+
+
 def test_repaired_candidate_review_failures_are_typed(
     tmp_path: Path,
     monkeypatch: pytest.MonkeyPatch,
@@ -562,6 +601,63 @@ def test_local_repair_rejects_out_of_scope_change_without_candidate(
     assert harness.artifacts.read_verified(
         harness.review_input.draft.text_artifact
     ) == original.encode("utf-8")
+
+
+def test_local_repair_retries_out_of_scope_change_with_fresh_request(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quote = "石门向里退开"
+    harness = _harness(tmp_path, _local_review(quote), monkeypatch)
+    report = asyncio.run(harness.service.review(harness.review_input, _request("scope-review")))
+    original = harness.artifacts.read_verified(harness.review_input.draft.text_artifact).decode()
+    repaired_text = original.replace(quote, "石门向外退开", 1)
+    responses = iter(
+        (
+            json.dumps({"repaired_text": "错误" + original}, ensure_ascii=False),
+            json.dumps({"repaired_text": repaired_text}, ensure_ascii=False),
+        )
+    )
+
+    async def generate(request: ModelRequest):
+        harness.endpoint.response_text = next(responses)
+        return await FakeModelEndpoint.generate(harness.endpoint, request)
+
+    monkeypatch.setattr(harness.endpoint, "generate", generate)
+    harness.endpoint.requests.clear()
+    child = asyncio.run(
+        harness.service.repair(harness.review_input, report, _request("scope-repair"))
+    )
+
+    assert harness.artifacts.read_verified(child.text_artifact).decode() == repaired_text
+    assert len(harness.endpoint.requests) == 2
+    assert harness.endpoint.requests[1].request_id.root.endswith(".boundary-retry1")
+    assert "host_out_of_scope_retry" in harness.endpoint.requests[1].prompt
+
+
+def test_local_repair_discards_out_of_scope_drift_but_keeps_scoped_edit(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    quote = "石门向里退开"
+    harness = _harness(tmp_path, _local_review(quote), monkeypatch)
+    report = asyncio.run(harness.service.review(harness.review_input, _request("clip-review")))
+    original = harness.artifacts.read_verified(harness.review_input.draft.text_artifact).decode()
+    proposed = "错误前缀" + original.replace(quote, "石门向外退开", 1)
+    harness.endpoint.response_text = json.dumps(
+        {"repaired_text": proposed},
+        ensure_ascii=False,
+    )
+
+    child = asyncio.run(
+        harness.service.repair(harness.review_input, report, _request("clip-repair"))
+    )
+
+    assert harness.artifacts.read_verified(child.text_artifact).decode() == original.replace(
+        quote,
+        "石门向外退开",
+        1,
+    )
 
 
 def test_major_rewrite_returns_writer_directive_and_does_not_repair(
@@ -855,6 +951,32 @@ def test_editorial_value_contract_negative_edges() -> None:
 def test_editor_review_payload_route_edges(payload: dict[str, object]) -> None:
     with pytest.raises(ValueError):
         EditorReviewPayload.model_validate(payload)
+
+
+def test_editor_pass_cannot_hide_draft_contradiction_as_unresolved_need() -> None:
+    with pytest.raises(ValueError, match="PASS cannot route a detected Draft defect"):
+        EditorReviewPayload(
+            verdict=EditorialVerdict.PASS,
+            unresolved_needs=("武器来源在正文中前后矛盾, 需后续统一",),
+        )
+
+    with pytest.raises(ValueError, match="PASS cannot route a detected Draft defect"):
+        EditorReviewPayload(
+            verdict=EditorialVerdict.PASS,
+            unresolved_needs=("正文新增人物关系及武器发放机制在可见上下文中未明确。",),
+        )
+
+    with pytest.raises(ValueError, match="PASS cannot route a detected Draft defect"):
+        EditorReviewPayload(
+            verdict=EditorialVerdict.PASS,
+            unresolved_needs=("当前稿件引入了强制征召, 属于未定义机制, 需确认是否保留或移除",),
+        )
+
+    with pytest.raises(ValueError, match="PASS cannot route a detected Draft defect"):
+        EditorReviewPayload(
+            verdict=EditorialVerdict.PASS,
+            unresolved_needs=("粗糙石片为新增细节, 当前作为未定义的物品机制, 未触发强制揭露。",),
+        )
 
 
 def test_editorial_review_input_and_report_lineage_edges(

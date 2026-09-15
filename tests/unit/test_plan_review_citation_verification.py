@@ -21,6 +21,7 @@ import pytest
 
 from novel_agent.agents.plan_reviewer import (
     _arc_volume_comparison_view,
+    _candidate_field_evidence_for_issue,
     _field_path_segments,
     _host_materialize_provider_review,
     _items_by_id,
@@ -154,6 +155,7 @@ def _payload() -> str:
                 {
                     "kind": "objective",
                     "summary": "本卷推进的责任",
+                    "owner_ids": ["entity.hero"],
                     "setup_window": f"{start}-{start + 20}",
                     "progress_windows": [f"{start + 21}-{end - 11}"],
                     "payoff_window": f"{end - 10}-{end}",
@@ -554,6 +556,21 @@ def test_a_blocking_model_finding_without_structured_targets_has_no_write_scope(
     assert reviewed.verification_failures
     assert ReviewCitationFailure.TARGETS_MISSING in reviewed.verification_failures[0]
     assert _model_blocking(reviewed) == []
+
+
+def test_citation_repair_inventory_recovers_items_when_reviewer_named_none() -> None:
+    issue = _issue(
+        item_ids=(),
+        field_path="volume_climax.description",
+        quote="正式揭露门被从对面推开",
+        unmet_condition="同一揭示不得在不同卷中重复",
+    )
+
+    evidence = _candidate_field_evidence_for_issue(_payload(), issue)
+
+    assert evidence["field_path"] == "volume_climax.description"
+    assert evidence["exact_quote_match_item_ids"] == ["vol-5"]
+    assert [row["item_id"] for row in evidence["items"]] == ["vol-4", "vol-5"]
 
 
 def test_a_nested_field_path_is_resolved_inside_the_named_item() -> None:

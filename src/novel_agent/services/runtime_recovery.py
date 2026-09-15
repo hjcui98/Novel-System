@@ -22,6 +22,7 @@ from novel_agent.domain.runtime import (
     ResumabilityStatus,
     RunCheckpoint,
     TaskAttempt,
+    TaskRecord,
     TaskStatus,
 )
 from novel_agent.ports.creative_runtime import EffectStatusResolver
@@ -66,7 +67,7 @@ class RuntimeRecoveryService:
         checkpoints: RunCheckpointRepository,
         artifacts: ArtifactRepository,
         commits: CommitService,
-        resolver: EffectStatusResolver,
+        resolver: EffectStatusResolver | None,
     ) -> None:
         self._session_factory = session_factory
         self._commands = commands
@@ -130,8 +131,13 @@ class RuntimeRecoveryService:
                 )
             )
         resolved: list[EffectReceipt] = []
+        if rows and self._resolver is None:
+            raise RuntimeCommandConflictError(
+                "automatic recovery cannot resolve an external effect without a resolver"
+            )
         for row in rows:
             prior = EffectReceipt.model_validate_json(json.dumps(row.effect_json))
+            assert self._resolver is not None
             resolution = self._resolver.resolve(prior)
             receipt = resolution.receipt
             if receipt.status in {EffectStatus.REQUESTED, EffectStatus.UNCERTAIN}:
@@ -160,14 +166,15 @@ class RuntimeRecoveryService:
             resolved.append(receipt)
         return tuple(resolved)
 
-    def resume(
+    def prepare(
         self,
         task_id: TaskId,
         *,
-        worker_id: str,
         actor_id: str,
         current_configuration_fingerprint: ArtifactId | None = None,
-    ) -> tuple[RunCheckpoint, TaskAttempt, AttemptFence]:
+    ) -> tuple[RunCheckpoint, TaskRecord]:
+        """Move one safely recoverable task back to READY without claiming it."""
+
         checkpoint = self.select_safe_checkpoint(
             task_id,
             current_configuration_fingerprint=current_configuration_fingerprint,
@@ -294,6 +301,21 @@ class RuntimeRecoveryService:
         elif task.status is not TaskStatus.READY:
             raise RuntimeCommandConflictError("task is not eligible for a fresh recovery attempt")
         ready = self._commands.get_task(task_id)
+        return checkpoint, ready
+
+    def resume(
+        self,
+        task_id: TaskId,
+        *,
+        worker_id: str,
+        actor_id: str,
+        current_configuration_fingerprint: ArtifactId | None = None,
+    ) -> tuple[RunCheckpoint, TaskAttempt, AttemptFence]:
+        checkpoint, ready = self.prepare(
+            task_id,
+            actor_id=actor_id,
+            current_configuration_fingerprint=current_configuration_fingerprint,
+        )
         attempt, fence = self._commands.claim(
             task_id,
             worker_id=worker_id,

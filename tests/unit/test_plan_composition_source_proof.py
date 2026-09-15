@@ -566,6 +566,58 @@ def test_operator_review_is_a_direct_scope_source_without_a_model_receipt() -> N
     assert ok, reason
 
 
+def test_operator_review_normalizes_serialized_payload_field_path() -> None:
+    parent = _proposal(
+        (
+            _item(
+                "plan.chapter.2",
+                history_retrieval={"requirement": "REQUIRED", "needs": ["future"]},
+                summary="parent summary",
+            ),
+        )
+    )
+    revised = _proposal(
+        (
+            _item(
+                "plan.chapter.2",
+                history_retrieval={"requirement": "REQUIRED", "needs": ["past"]},
+                summary="unauthorised rewrite",
+            ),
+        ),
+        number=2,
+    )
+    parent_ref = ArtifactRef(
+        artifact_id=ArtifactId("sha256:" + "7" * 64),
+        byte_length=1,
+        media_type=PLAN_PROPOSAL_MEDIA_TYPE,
+        schema_version=VERSION,
+    )
+    review = OperatorReviewEvidence(
+        review_id=StableId("operator-review.history-path"),
+        target_artifact_ref=parent_ref,
+        reviewer_id="reviewer.codex",
+        reason="future event query",
+        issues=(
+            OperatorReviewFinding(
+                issue_id=StableId("operator-issue.history-path"),
+                kind="history_need_targets_future_event",
+                summary="Need asks for a target event",
+                affected_item_ids=(StableId("plan.chapter.2"),),
+                field_path="payload.history_retrieval",
+            ),
+        ),
+    )
+
+    scope = operator_revision_scope(review)
+    assert scope.targets[0].field_paths == ("history_retrieval",)
+    composed = compose_scoped_revision(parent, revised, scope)
+    assert composed.items[0].payload["history_retrieval"] == {
+        "requirement": "REQUIRED",
+        "needs": ["past"],
+    }
+    assert composed.items[0].payload["summary"] == "parent summary"
+
+
 def test_a_review_with_no_finding_cannot_rewrite_the_plan() -> None:
     """The frozen 47f9a758 shape: REVISE, no issues, prose instruction."""
 
@@ -961,6 +1013,23 @@ def test_validate_rejects_an_unresolved_issue_edited_away() -> None:
 
     with pytest.raises(PlanCompositionError, match="unresolved"):
         validate_composed_proposal(parent, stripped, scope)
+
+
+def test_scoped_revision_restores_parent_coverage_metadata() -> None:
+    parent = _proposal((_item("vol-1", goal="父", ending_state="父末"),), number=1)
+    revised = parent.model_copy(
+        update={
+            "coverage": 0.0,
+            "items": (_item("vol-1", goal="子", ending_state="父末"),),
+            "proposal_id": StableId("plan-proposal.coverage-revision"),
+        }
+    )
+    review = _review(_finding("vol-1", field_path="goal"))
+
+    composed = compose_scoped_revision(parent, revised, revision_scope(review))
+
+    assert composed.coverage == parent.coverage
+    assert composed.items[0].payload["goal"] == "子"
 
 
 # ------------------------------------------------------------------ V07: proof identity

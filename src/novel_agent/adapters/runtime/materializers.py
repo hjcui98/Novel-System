@@ -334,6 +334,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             world,
             proposal,
             trusted_level=trusted_level,
+            allow_existing_revisions=execution.composition_proof is not None,
         )
         incoming_nodes = tuple(
             cast(
@@ -1180,6 +1181,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         proposal: PlanProposal,
         *,
         trusted_level: PlanLevel | None = None,
+        allow_existing_revisions: bool = False,
     ) -> tuple[WorldRootDocument, WorldRootRef | None, dict[StableId, tuple[StableId, ...]]]:
         """Normalize legal declarations into OPEN World obligations.
 
@@ -1198,6 +1200,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         }
         existing = {item.obligation_id: item for item in world.obligations}
         declarations: list[PlanObligation] = []
+        replacements: dict[StableId, PlanObligation] = {}
         bindings: dict[StableId, list[StableId]] = {}
         # ``obligation_plan`` is the legacy upper-layer responsibility table.  It is
         # compiled only through the legacy branch below: keeping it out of this key
@@ -1311,8 +1314,15 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 prior = existing.get(expected_id)
                 if prior is not None:
                     if prior != planned:
-                        raise CandidateMaterializationError(
-                            f"obligation declaration conflicts with existing {expected_id.root}"
+                        if not allow_existing_revisions:
+                            raise CandidateMaterializationError(
+                                f"obligation declaration conflicts with existing {expected_id.root}"
+                            )
+                        replacements[expected_id] = planned.model_copy(
+                            update={
+                                "status": prior.status,
+                                "evidence_refs": prior.evidence_refs,
+                            }
                         )
                     continue
                 if any(
@@ -1320,7 +1330,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 ):
                     continue
                 declarations.append(planned)
-        if not declarations:
+        if not declarations and not replacements:
             return (
                 world,
                 None,
@@ -1332,7 +1342,10 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         updated = world.model_copy(
             update={
                 "root_hash": "sha256:" + "0" * 64,
-                "obligations": (*world.obligations, *declarations),
+                "obligations": (
+                    *(replacements.get(item.obligation_id, item) for item in world.obligations),
+                    *declarations,
+                ),
             }
         )
         updated = updated.model_copy(update={"root_hash": world_root_content_id(updated)})

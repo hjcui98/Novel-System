@@ -8,6 +8,7 @@ from collections.abc import Mapping
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
+    DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE,
     OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
     AcceptanceCommand,
     AcceptanceDecision,
@@ -47,6 +48,10 @@ _ISSUE_REQUIRED_FIELDS: dict[str, tuple[str, ...]] = {
     "long_range_payoff_without_time_window": ("not_before_chapter",),
     "unresolved_scope_missing": ("affected_chapters",),
     "early_resolution_of_future_locked_obligation": ("target_chapter_start",),
+    # Memory may only retrieve facts that exist at the declared source cutoff.
+    # Keep this as a field-scoped repair: the rejected ChapterSet remains the
+    # immutable parent and unrelated narrative fields are restored byte-for-byte.
+    "history_need_targets_future_event": ("history_retrieval",),
 }
 
 
@@ -157,6 +162,24 @@ class RuntimeAcceptanceService:
                 raise RuntimeCommandConflictError(
                     "acceptance identity was reused with another payload"
                 )
+            if prior.decision is AcceptanceDecision.REJECT:
+                try:
+                    self.rejection_successor(command)
+                except LookupError:
+                    if command.candidate.kind is CandidateKind.PLAN:
+                        directive_ref = self._record_revision(task, command)
+                        replayed_revision = self._revised_plan_task(
+                            task,
+                            command.candidate.artifact_ref,
+                            command.review_artifact_refs,
+                            directive_ref,
+                        )
+                    else:
+                        directive_ref = self._record_draft_revision(task, command)
+                        replayed_revision = self._revised_draft_task(
+                            task, command.candidate.artifact_ref, directive_ref
+                        )
+                    self._commands.create_task(replayed_revision)
             return prior
         if task.status is not TaskStatus.WAITING_INPUT:
             raise RuntimeCommandConflictError("acceptance task is not waiting for input")
@@ -231,6 +254,11 @@ class RuntimeAcceptanceService:
             revised = self._revised_plan_task(
                 task, command.candidate.artifact_ref, command.review_artifact_refs, directive_ref
             )
+        elif (
+            command.decision is AcceptanceDecision.REJECT and task.kind is TaskKind.DRAFT_ACCEPTANCE
+        ):
+            directive_ref = self._record_draft_revision(task, command)
+            revised = self._revised_draft_task(task, command.candidate.artifact_ref, directive_ref)
         self._commands.complete_waiting_task(
             command.task_id,
             receipt=receipt,
@@ -240,6 +268,111 @@ class RuntimeAcceptanceService:
         if revised is not None:
             self._commands.create_task(revised)
         return receipt
+
+    def rejection_successor(self, command: AcceptanceCommand) -> TaskRecord:
+        """Return the durable repair task created by a rejected acceptance."""
+
+        if command.decision is not AcceptanceDecision.REJECT:
+            raise RuntimeCommandConflictError("only a rejected acceptance has a repair successor")
+        task = self._commands.get_task(command.task_id)
+        if command.candidate.kind is CandidateKind.DRAFT:
+            producer = self._commands.get_task(task.dependency_task_ids[0])
+            generation = max(task.writer_generation, producer.writer_generation) + 1
+            suffix = f"draft.{task.chapter_index}.g{generation}"
+            task_id = TaskId(
+                bounded_runtime_identity(
+                    f"{task.run_id.root}.{suffix}",
+                    suffix,
+                    f"draft.{task.run_id.root}.{generation}",
+                ).root
+            )
+        else:
+            generation = task.planning_generation + 1
+            level = (
+                "chapter-set"
+                if task.plan_level is None
+                else task.plan_level.value.replace("_", "-")
+            )
+            suffix = (
+                f"plan.{level}.{task.horizon_start}-{task.horizon_end}.g{generation}"
+                if task.horizon_start is not None and task.horizon_end is not None
+                else f"plan.{level}.g{generation}"
+            )
+            task_id = TaskId(
+                bounded_runtime_identity(
+                    f"{task.run_id.root}.{suffix}",
+                    suffix,
+                    f"plan.{task.run_id.root}.{generation}",
+                ).root
+            )
+        return self._commands.get_task(task_id)
+
+    def _record_draft_revision(
+        self, task: TaskRecord, command: AcceptanceCommand
+    ) -> ArtifactRef:
+        directive = {
+            "directive_id": bounded_runtime_identity(
+                f"draft-revision.{task.task_id.root}",
+                f"draft-revision.{command.command_id.root}",
+            ).root,
+            "kind": "draft_revision",
+            "actor_kind": command.actor_kind.value,
+            "actor_id": command.actor_id,
+            "run_id": task.run_id.root,
+            "project_id": task.project_id.root,
+            "rejected_task_id": task.task_id.root,
+            "target_chapter": task.chapter_index,
+            "rejected_candidate_ref": command.candidate.artifact_ref.model_dump(mode="json"),
+            "reason": command.reason,
+            "required_action": "rewrite_complete_chapter_and_re_review",
+        }
+        return self._artifacts.put(
+            canonical_json_bytes(directive),
+            DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE,
+            self._schema_version,
+        )
+
+    def _revised_draft_task(
+        self,
+        task: TaskRecord,
+        parent_ref: ArtifactRef,
+        directive_ref: ArtifactRef,
+    ) -> TaskRecord:
+        producer = next(
+            (
+                self._commands.get_task(dependency_id)
+                for dependency_id in task.dependency_task_ids
+                if self._commands.get_task(dependency_id).kind is TaskKind.DRAFT_CANDIDATE
+            ),
+            None,
+        )
+        if producer is None or producer.status is not TaskStatus.SUCCEEDED:
+            raise RuntimeCommandConflictError(
+                "rejected Draft acceptance has no succeeded Writer producer"
+            )
+        generation = max(task.writer_generation, producer.writer_generation) + 1
+        suffix = f"draft.{task.chapter_index}.g{generation}"
+        return task.model_copy(
+            update={
+                "task_id": TaskId(
+                    bounded_runtime_identity(
+                        f"{task.run_id.root}.{suffix}",
+                        suffix,
+                        f"draft.{task.run_id.root}.{generation}",
+                    ).root
+                ),
+                "kind": TaskKind.DRAFT_CANDIDATE,
+                "task_revision": 0,
+                "status": TaskStatus.READY,
+                "candidate_binding_ref": None,
+                "terminal_artifact_refs": (),
+                "block_cause": None,
+                "dependency_task_ids": (producer.task_id,),
+                "input_artifact_refs": (parent_ref, directive_ref),
+                "writer_generation": generation,
+                "affects_future_plan": None,
+            }
+        )
 
     def _record_revision(self, task: TaskRecord, command: AcceptanceCommand) -> ArtifactRef:
         """Turn a reviewed rejection into a structured, actor-labelled revision."""

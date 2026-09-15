@@ -656,6 +656,7 @@ def _volume_slots(index: int, *, slots: bool = True) -> dict[str, object]:
             {
                 "kind": "objective",
                 "summary": f"volume.{index} responsibility",
+                "owner_ids": ["entity.hero"],
                 "not_before_chapter": index * 100 + 1,
                 "setup_window": f"{index * 100 + 1}-{index * 100 + 40}",
                 "progress_windows": [f"{index * 100 + 41}-{index * 100 + 70}"],
@@ -977,10 +978,21 @@ def test_two_declared_history_needs_are_bounded_to_two() -> None:
         chapter_index=21,
         summary="write with two explicit history questions",
         payload={
-            "history_needs": [
-                {"kind": "causal_history", "query": "where did the key come from"},
-                {"kind": "setup_evidence", "query": "when was the gate first shown"},
-            ]
+            "history_retrieval": {
+                "requirement": "REQUIRED",
+                "needs": [
+                    {
+                        "kind": "causal_history",
+                        "query": "where did the key come from",
+                        "source_chapter_end": 20,
+                    },
+                    {
+                        "kind": "setup_evidence",
+                        "query": "when was the gate first shown",
+                        "source_chapter_end": 20,
+                    },
+                ],
+            }
         },
     )
     plan = PlanRootDocument(root_hash=HASH, schema_version=VERSION, chapter_goals=(goal,))

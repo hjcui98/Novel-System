@@ -118,6 +118,36 @@ class RuntimeTaskQueryRepository:
         ready = self.ready_batch(limit=1, project_id=project_id, run_id=run_id)
         return None if not ready else ready[0].task_id
 
+    def next_waiting_retry(
+        self,
+        *,
+        project_id: ProjectId | None = None,
+        run_id: RunId | None = None,
+    ) -> TaskRecord | None:
+        """Return the oldest current-basis retry frontier for automatic recovery."""
+
+        with self._session_factory() as session:
+            statement = (
+                select(RuntimeTaskProjectionRow)
+                .join(ProjectRow, ProjectRow.project_id == RuntimeTaskProjectionRow.project_id)
+                .where(
+                    RuntimeTaskProjectionRow.status == TaskStatus.WAITING_RETRY.value,
+                    RuntimeTaskProjectionRow.basis_commit == ProjectRow.current_commit_id,
+                    RuntimeTaskProjectionRow.current_attempt_id.is_(None),
+                )
+            )
+            if project_id is not None:
+                statement = statement.where(RuntimeTaskProjectionRow.project_id == project_id.root)
+            if run_id is not None:
+                statement = statement.where(RuntimeTaskProjectionRow.run_id == run_id.root)
+            row = session.scalars(
+                statement.order_by(
+                    RuntimeTaskProjectionRow.updated_at,
+                    RuntimeTaskProjectionRow.task_id,
+                ).limit(1)
+            ).first()
+        return None if row is None else TaskRecord.model_validate_json(json.dumps(row.task_json))
+
     def ready_batch(
         self,
         *,

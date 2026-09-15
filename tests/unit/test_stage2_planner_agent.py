@@ -532,6 +532,101 @@ def test_provider_draft_rejects_model_supplied_unresolved_identity() -> None:
         )
 
 
+def test_provider_chapter_set_requires_real_history_needs_and_canonical_first_waiver() -> None:
+    def chapter(index: int, history: object) -> ProposedItem:
+        return ProposedItem(
+            item_id=StableId(f"plan.chapter.{index}"),
+            kind="goal",
+            payload={
+                "chapter_index": index,
+                "summary": f"chapter {index}",
+                "history_retrieval": history,
+            },
+            provenance=ProposalProvenance.PLANNER_PROPOSED,
+        )
+
+    with pytest.raises(ValidationError, match="cannot issue its own waiver"):
+        _ModelPlannerProposalDraft(
+            mode=AgentMode.CHAPTER_SET,
+            plan_items=(
+                chapter(
+                    2,
+                    {
+                        "requirement": "NOT_REQUIRED",
+                        "reason_code": "no_historical_dependency",
+                        "waiver_ref": "waiver.history.no_historical_dependency",
+                    },
+                ),
+            ),
+            coverage=1.0,
+        )
+    with pytest.raises(ValidationError, match="exact host first-chapter waiver"):
+        _ModelPlannerProposalDraft(
+            mode=AgentMode.CHAPTER_SET,
+            plan_items=(
+                chapter(
+                    1,
+                    {
+                        "requirement": "NOT_REQUIRED",
+                        "reason_code": "first_chapter",
+                        "waiver_ref": "first_chapter_waiver",
+                    },
+                ),
+            ),
+            coverage=1.0,
+        )
+    accepted = _ModelPlannerProposalDraft(
+        mode=AgentMode.CHAPTER_SET,
+        plan_items=(
+            chapter(1, None),
+            chapter(
+                2,
+                {
+                    "requirement": "REQUIRED",
+                    "needs": [
+                        {
+                            "kind": "causal_history",
+                            "query": "第一章已经发生了什么？",
+                            "entity_ids": ["entity.bootstrap.1"],
+                            "source_chapter_end": 1,
+                        }
+                    ],
+                },
+            ),
+        ),
+        coverage=1.0,
+    )
+    assert len(accepted.plan_items) == 2
+
+    with pytest.raises(ValidationError, match="own future target event"):
+        _ModelPlannerProposalDraft(
+            mode=AgentMode.CHAPTER_SET,
+            plan_items=(
+                ProposedItem(
+                    item_id=StableId("plan.chapter.3"),
+                    kind="goal",
+                    payload={
+                        "chapter_index": 3,
+                        "summary": "陆沉舟通过实战掌握断纹斩第一式。",
+                        "beats": ["陆沉舟掌握断纹斩第一式。"],
+                        "history_retrieval": {
+                            "requirement": "REQUIRED",
+                            "needs": [
+                                {
+                                    "kind": "causal_history",
+                                    "query": "陆沉舟如何掌握断纹斩第一式？",
+                                    "source_chapter_end": 2,
+                                }
+                            ],
+                        },
+                    },
+                    provenance=ProposalProvenance.PLANNER_PROPOSED,
+                ),
+            ),
+            coverage=1.0,
+        )
+
+
 def test_provider_planning_turn_rejects_model_supplied_unresolved_identity() -> None:
     with pytest.raises(ValidationError, match="must omit issue_id"):
         _ModelPlanningTurnDraft.model_validate(

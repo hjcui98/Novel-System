@@ -2,7 +2,7 @@
 
 构建可执行分卷架构。严格覆盖 Profile 规定的全部卷范围（`expected_volume_count` 卷、连续覆盖 1..`target_chapters`），不能只规划开头几卷。所有规划内容必须遵守受信 `ProjectProfile` language，并遵守 Profile 的时间锁、能力/装备里程碑与地点前置条件。
 
-若输入包含父候选、已核验审校和 `REVISION_SCOPE`，按有界修订执行：输出完整候选，但只改范围内的 item/字段；每个范围内的目标字段都必须实际变化，不能原样复制父候选或审校引用。结构化叙事键保留合法窗口、角色和责任句柄，仅替换被点名的 `description`；宿主负责最终范围裁剪和授权核验。
+若输入包含父候选、已核验审校和 `REVISION_SCOPE`，按有界修订执行：只输出范围内的 item/字段，范围外内容由宿主从父候选恢复；每个范围内的目标字段都必须实际变化，不能原样复制父候选或审校引用。结构化叙事键保留合法窗口、角色和责任句柄，仅替换被点名的 `description`；宿主负责最终范围组合和授权核验。
 
 ARC_VOLUME（包括修订）只输出 `plan_items`；必须显式输出空的
 `project_intent_items`、`world_design_items`、`profile_items`，并把 `strategy` 设为
@@ -16,7 +16,7 @@ ARC_VOLUME（包括修订）只输出 `plan_items`；必须显式输出空的
 - 边界与排期：`entry_conditions`、`exit_conditions`、`reveal_window`、`obligation_plan`；
 - 每个结构槽尽量说明 cause、participants、conflict、cost、state_delta 与 chapter_window。
 
-`obligation_plan` 为责任表条目列表，每条包含 `summary`、`kind`（objective/promise/foreshadowing/...）、`setup_window`、`progress_windows`、`payoff_window` 与 `not_before_chapter`。后卷的武器、地点和真相不得提前：`reveal_window` 与 `not_before_chapter` 必须与 Profile 时间锁一致。若某卷无法安全规划，返回结构化 `unresolved` 阻断项（kind 必须使用 AUTHOR_INTENT_CONFLICT / CURRENT_STATE_UNKNOWN / POWER_LEVEL_UNKNOWN / KNOWLEDGE_BOUNDARY_UNKNOWN 之一，`blocking=true`），不要以不完整 coverage 宣称 PLAN_READY。
+`obligation_plan` 为责任表条目列表，每条包含 `summary`、`kind`（objective/promise/foreshadowing/...）、`owner_ids`、`setup_window`、`progress_windows`、`payoff_window` 与 `not_before_chapter`。`owner_ids` 至少包含一个上下文中逐字存在的 canonical World entity ID；不得填写名称、展示层 anchor 或自造 ID。owner 是必须持续追踪其状态以判断责任设立、推进和兑现的叙事主体/检索锚点，不是奖励授予者、导师、信息持有者、地点或偶然参与者；除非该实体自身的持续状态就是责任的一部分。允许多条责任基于事实绑定同一个 owner，不得为制造多样性改绑。后卷的武器、地点和真相不得提前：`reveal_window` 与 `not_before_chapter` 必须与 Profile 时间锁一致。若某卷无法安全规划，返回结构化 `unresolved` 阻断项（kind 必须使用 AUTHOR_INTENT_CONFLICT / CURRENT_STATE_UNKNOWN / POWER_LEVEL_UNKNOWN / KNOWLEDGE_BOUNDARY_UNKNOWN 之一，`blocking=true`），不要以不完整 coverage 宣称 PLAN_READY。
 
 `unresolved` 条目必须有界：若摘要中提到任何章节区间（例如“第二卷（第101-200章）”），必须同时用 `affected_chapters` 逐章声明该区间（整数列表）；宿主会把摘要里的章节窗口与 `affected_chapters` 对照，缺少声明即 `UNRESOLVED_SCOPE_MISSING` 阻断。不确定影响范围时，不要以 advisory 形式提出。
 

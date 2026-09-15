@@ -282,9 +282,16 @@ def operator_revision_scope(review: OperatorReviewEvidence) -> PlanRevisionScope
         if not finding.blocking or not finding.affected_item_ids:
             continue
         finding_ids.append(finding.issue_id)
-        fields = () if not finding.field_path else (finding.field_path,)
+        # Operator evidence addresses the serialized item and may therefore cite
+        # ``payload.foo``. Composition already operates inside ``item.payload``;
+        # retaining that transport prefix would read a non-existent nested key
+        # and silently restore the rejected value.
+        field_path = finding.field_path
+        if field_path is not None and field_path.startswith("payload."):
+            field_path = field_path.removeprefix("payload.")
+        fields = () if not field_path else (field_path,)
         chapter_window = None
-        if finding.field_path in {"affected_chapters", "unresolved.affected_chapters"}:
+        if field_path in {"affected_chapters", "unresolved.affected_chapters"}:
             match = re.fullmatch(
                 r"\s*(?:chapters\s+)?(\d{1,4})\s*[-~\uff5e]\s*(\d{1,4})\s*",
                 finding.expected or "",
@@ -567,6 +574,11 @@ def _compose_items(
             "items": tuple(composed),
             "unresolved": _compose_unresolved(parent, revised, scope),
             "unresolved_operations": _compose_unresolved_operations(parent, revised, scope),
+            # Coverage is proposal-level host metadata, not an authorised item
+            # field.  A Planner revision may omit it or return its schema default;
+            # composition must retain the parent's verified value before the
+            # invariant check below, just like it restores unmentioned items.
+            "coverage": parent.coverage,
         }
     )
 

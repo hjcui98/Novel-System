@@ -49,6 +49,7 @@ from novel_agent.domain.ids import (
     TaskId,
 )
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
+from novel_agent.domain.planning import PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE
 from novel_agent.domain.runtime import (
     AttemptFence,
     AttemptOutcome,
@@ -384,6 +385,35 @@ def test_runtime_settlement_marks_only_persisted_model_output_consumed(
     )
     restored = SqlModelCallLedger(factory).load(request.request_id)
     assert restored is not None and restored.response_consumed_at is not None
+
+    checkpointed_task = commands.create_run_and_initial_task(
+        _request("run.sql-consumption-checkpointed", base)
+    )
+    _, checkpointed_fence = commands.claim(checkpointed_task.task_id, worker_id="planner")
+    commands.mark_started(checkpointed_fence)
+    checkpointed_request = request.model_copy(
+        update={
+            "request_id": StableId("model.sql-consumption.checkpointed"),
+            "run_id": checkpointed_task.run_id,
+            "task_id": checkpointed_task.task_id,
+            "attempt_id": checkpointed_fence.attempt_id,
+        }
+    )
+    asyncio.run(gateway.generate_structured(checkpointed_request, _ReplayPayload))
+    planning_checkpoint_ref = artifacts.put(
+        json.dumps({"model_calls_used": 1}).encode(),
+        PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE,
+        SchemaVersion("1.0.0"),
+    )
+    commands.settle_attempt(
+        checkpointed_fence,
+        outcome=AttemptOutcome.SUSPENDED,
+        terminal_status=TaskStatus.RECOVERY_PENDING,
+        artifact_refs=(planning_checkpoint_ref,),
+        failure_class=FailureClass.RUNTIME_CAPABILITY_UNAVAILABLE,
+    )
+    checkpointed = SqlModelCallLedger(factory).load(checkpointed_request.request_id)
+    assert checkpointed is not None and checkpointed.response_consumed_at is not None
 
     interrupted_task = commands.create_run_and_initial_task(
         _request("run.sql-consumption-interrupted", base)

@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import json
 from collections.abc import Callable, Mapping, Sequence
 from dataclasses import dataclass
 
@@ -15,6 +16,7 @@ from novel_agent.domain.benchmark import (
     TextRootDocument,
     VisibleOutlineNode,
 )
+from novel_agent.domain.creative_runtime import DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE
 from novel_agent.domain.generation import (
     AcceptedPlanBinding,
     RecentProseContext,
@@ -34,6 +36,7 @@ from novel_agent.domain.ids import (
 )
 from novel_agent.domain.memory import DerivedBuildStatus, WorldRootDocument
 from novel_agent.domain.model_calls import ModelRequest
+from novel_agent.domain.plan_obligation_scope import scoped_plan_obligation_ids
 from novel_agent.domain.runtime import TaskRecord
 from novel_agent.domain.stage2 import FutureIsolationAttestation, ProjectProfileRootDocument
 from novel_agent.domain.world import PlanLevel, PlanNode, TruthClass
@@ -232,6 +235,12 @@ def _volume_stage_constraints(nodes: Sequence[PlanNode], chapter_index: int) -> 
                     continue
                 if scope == "volume":
                     constraints.append(f"当前卷阶段[整卷:{key}]：{slot.body}")  # noqa: RUF001
+                elif scope == "opening" and scope in positions:
+                    constraints.append(
+                        f"当前卷阶段[卷首目标:{key}]：{slot.body}"  # noqa: RUF001
+                        "（这是卷首阶段需要建立的边界，不是本章开始前已经发生的事实；"  # noqa: RUF001
+                        "只按当前章节目标建立相容部分）"  # noqa: RUF001
+                    )
                 elif scope in positions:
                     constraints.append(
                         f"当前卷阶段[{VOLUME_STAGE_POSITION_LABELS[scope]}:{key}]：{slot.body}"  # noqa: RUF001
@@ -460,9 +469,10 @@ class ProductionWritingRequestFactory:
         )
         if not goals:
             raise ValueError("accepted PlanRoot must contain a target chapter goal")
-        goal_ids = {goal.goal_id for goal in goals}
-        obligation_ids = tuple(
-            dict.fromkeys(item for goal in goals for item in goal.obligation_ids)
+        obligation_ids = scoped_plan_obligation_ids(
+            plan=plan,
+            world=world,
+            chapter_index=task.chapter_index,
         )
         world_obligation_ids = {item.obligation_id for item in world.obligations}
         unknown_obligations = set(obligation_ids) - world_obligation_ids
@@ -471,34 +481,6 @@ class ProductionWritingRequestFactory:
                 "WritingTask references unknown obligations: "
                 + ", ".join(sorted(item.root for item in unknown_obligations))
             )
-        # Only nodes that own this chapter's goal, are its accepted parent, or
-        # share an obligation *at or above* its own planning level belong in the
-        # chapter's required beats.  A chapter goal and a later volume can cite the
-        # same durable obligation, and matching on the obligation alone pulled that
-        # future sibling volume's summary into this chapter as a requirement.
-        goal_parent_ids = {
-            node.parent_id
-            for node in plan.nodes
-            if node.plan_node_id in goal_ids and node.parent_id is not None
-        }
-        goal_levels = {node.plan_level for node in plan.nodes if node.plan_node_id in goal_ids}
-        relevant_nodes = tuple(
-            node
-            for node in plan.nodes
-            if node.plan_node_id in goal_ids
-            or node.plan_node_id in goal_parent_ids
-            or (
-                bool(set(node.obligation_ids) & set(obligation_ids))
-                and not (
-                    goal_levels
-                    and node.plan_level is not None
-                    and node.plan_level not in goal_levels
-                    and node.plan_node_id not in goal_parent_ids
-                    and node.chapter_start is not None
-                    and node.chapter_start > task.chapter_index
-                )
-            )
-        )
         # The enclosing volume's stage slots are the plan's own statement of what
         # the volume must enter with, hold to, and exit with.  Every node whose own
         # chapter range covers this chapter contributes, whatever its planning
@@ -521,7 +503,6 @@ class ProductionWritingRequestFactory:
                 (
                     *payload_beats,
                     *state_changes,
-                    *(node.summary for node in relevant_nodes),
                     *summaries,
                 )
             )
@@ -603,6 +584,14 @@ class ProductionWritingRequestFactory:
         profile_lock_constraints, profile_lock_forbids = self._profile_lock_constraints(
             profile, task.chapter_index
         )
+        draft_revision_constraints = self._draft_revision_constraints(task)
+        next_chapter_boundaries = tuple(
+            f"保留给第{goal.chapter_index}章，"  # noqa: RUF001
+            f"不得在第{task.chapter_index}章发生、完成或写成既成事实："  # noqa: RUF001
+            f"{goal.summary}"
+            for goal in plan.chapter_goals
+            if goal.chapter_index == task.chapter_index + 1
+        )
         language = self._profile_string(profile, "language", "")
         language_constraint = (
             (
@@ -640,12 +629,15 @@ class ProductionWritingRequestFactory:
                 *profile_lock_constraints,
                 *volume_stage_constraints,
                 *advisory_constraints,
+                *draft_revision_constraints,
             ),
             forbidden_reveals=(
                 *self._profile_strings(profile, "forbidden_reveals"),
                 *lock_forbids,
                 *profile_lock_forbids,
                 *advisory_forbidden,
+                *next_chapter_boundaries,
+                *draft_revision_constraints,
             ),
             preserve_requirements=self._profile_strings(profile, "preserve_requirements"),
             style_requirements=(
@@ -884,9 +876,16 @@ class ProductionWritingRequestFactory:
                     latest = None
                 else:
                     continue
-                constraints.append(f"Profile {key}: {text}")
                 if isinstance(boundary, int) and chapter_index < boundary:
-                    forbids.append(f"Profile {key} is locked until chapter {boundary}: {text}")
+                    protected = (
+                        f"Profile {key} contains protected future material locked until "
+                        f"chapter {boundary}; do not introduce or infer its people, objects, "
+                        "events, identities, mechanisms, locations, or outcomes."
+                    )
+                    constraints.append(protected)
+                    forbids.append(protected)
+                    continue
+                constraints.append(f"Profile {key}: {text}")
                 if isinstance(latest, int) and chapter_index > latest:
                     # A deadline is the opposite of a lock: the chapter must land
                     # the item by then.  "locked until 90" would read as the
@@ -902,7 +901,10 @@ class ProductionWritingRequestFactory:
         current_goals: tuple[ChapterGoal, ...] | None = None,
     ) -> AuthorPlanningContext:
         del current_goals
-        target_end = min(task.horizon_end or task.chapter_index + 2, task.chapter_index + 2)
+        # Writer receives the current chapter contract only. Future ChapterGoals
+        # belong to planning/evaluation; exposing chapters N+1/N+2 as ordinary
+        # author context caused the Writer to consume the next chapter early.
+        target_end = task.chapter_index
         scoped_goal_ids = {
             goal.goal_id
             for goal in plan.chapter_goals
@@ -932,18 +934,26 @@ class ProductionWritingRequestFactory:
             )
 
         selected: dict[StableId, object] = {}
+        writer_safe_story_types = {"core_premise", "theme", "reader_promise"}
+
+        def story_node_is_visible(node: PlanNode) -> bool:
+            return (
+                node.plan_level is not PlanLevel.STORY or node.node_type in writer_safe_story_types
+            )
+
         for node in plan.nodes:
             related = (
                 node.plan_node_id in scoped_goal_ids
                 or bool(set(node.obligation_ids) & scoped_obligation_ids)
                 or covers(node, task.chapter_index, target_end)
-                or node.plan_level is PlanLevel.STORY
+                or (node.plan_level is PlanLevel.STORY and story_node_is_visible(node))
             )
             if not related:
                 continue
             current: PlanNode | None = node
             while current is not None:
-                selected[current.plan_node_id] = current
+                if story_node_is_visible(current):
+                    selected[current.plan_node_id] = current
                 current = by_id.get(current.parent_id) if current.parent_id is not None else None
         nodes = tuple(
             VisibleOutlineNode(
@@ -978,6 +988,36 @@ class ProductionWritingRequestFactory:
             chapter_goals=goals,
             source_hash=source_hash,
         )
+
+    def _draft_revision_constraints(self, task: TaskRecord) -> tuple[str, ...]:
+        constraints: list[str] = []
+        for ref in task.input_artifact_refs:
+            if ref.media_type != DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE:
+                continue
+            try:
+                directive = json.loads(self._artifacts.read_verified(ref))
+            except (UnicodeDecodeError, ValueError) as error:
+                raise ValueError("Draft revision directive is unreadable") from error
+            if (
+                directive.get("kind") != "draft_revision"
+                or directive.get("run_id") != task.run_id.root
+                or directive.get("project_id") != task.project_id.root
+                or directive.get("target_chapter") != task.chapter_index
+            ):
+                raise ValueError("Draft revision directive does not match the Writer task")
+            reason = directive.get("reason")
+            if not isinstance(reason, str) or not reason.strip():
+                raise ValueError("Draft revision directive requires a non-empty reason")
+            recovery_kind = directive.get("recovery_kind")
+            source = {
+                "automatic_editorial_retry": "自动审校重试",
+                "automatic_length_contract_retry": "自动长度合同重试",
+            }.get(recovery_kind, "人工拒绝修订")
+            constraints.append(
+                f"{source}：必须完整重写本章，不得复用被拒稿中的新增设定或跨章事件；"  # noqa: RUF001
+                f"修复原因：{reason.strip()}"  # noqa: RUF001
+            )
+        return tuple(dict.fromkeys(constraints))
 
     @staticmethod
     def _profile_string(

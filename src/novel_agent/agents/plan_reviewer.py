@@ -49,6 +49,7 @@ from novel_agent.domain.retrieval_decision import (
     HOST_ISSUED_WAIVER_REFS,
     HistoryRetrievalDecision,
     HistoryRetrievalRequirement,
+    history_need_targets_same_chapter,
 )
 from novel_agent.domain.stage2 import (
     AgentMode,
@@ -118,6 +119,7 @@ def apply_host_plan_review_constraints(
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
     accepted_obligation_ids: frozenset[str] | None = None,
+    accepted_owner_ids: frozenset[str] | None = None,
     accepted_obligation_windows: Mapping[str, tuple[int | None, int | None]] | None = None,
     author_constraints: Sequence[AuthorConstraint] = (),
     trusted_window: tuple[int, int] | None = None,
@@ -195,6 +197,7 @@ def apply_host_plan_review_constraints(
                 else _expected_target_chapters(document)
             ),
             accepted_obligation_ids=accepted_obligation_ids,
+            accepted_owner_ids=accepted_owner_ids,
             accepted_obligation_windows=accepted_obligation_windows,
             author_constraints=author_constraints,
         ),
@@ -369,6 +372,7 @@ def host_only_plan_review(
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
     accepted_obligation_ids: frozenset[str] | None = None,
+    accepted_owner_ids: frozenset[str] | None = None,
     accepted_obligation_windows: Mapping[str, tuple[int | None, int | None]] | None = None,
     author_constraints: Sequence[AuthorConstraint] = (),
     trusted_window: tuple[int, int] | None = None,
@@ -393,6 +397,7 @@ def host_only_plan_review(
         expected_volume_count=expected_volume_count,
         expected_target_chapters=expected_target_chapters,
         accepted_obligation_ids=accepted_obligation_ids,
+        accepted_owner_ids=accepted_owner_ids,
         accepted_obligation_windows=accepted_obligation_windows,
         author_constraints=author_constraints,
         trusted_window=trusted_window,
@@ -862,6 +867,46 @@ def _candidate_field_values_for_issue(
     return values
 
 
+def _candidate_field_evidence_for_issue(
+    target_payload: str, issue: PlanReviewIssue
+) -> dict[str, object]:
+    """Build a bounded, candidate-local inventory for citation repair.
+
+    A reviewer can omit every ``affected_item_id`` while still naming a real field
+    and quote.  In that case the normal verification result must remain a failure,
+    but an empty diagnostic gives the repair call no way to recover the actual item
+    ids.  This inventory is derived from the reviewed candidate only; it grants no
+    authorization and is emitted only in the host's repair feedback.
+    """
+
+    if not issue.field_path:
+        return {"field_path": None, "items": [], "exact_quote_match_item_ids": []}
+    items = _items_by_id(target_payload)
+    rows: list[dict[str, object]] = []
+    exact_matches: list[str] = []
+    for item_id, payload in items.items():
+        resolved = _resolve_field_path(payload, issue.field_path)
+        if isinstance(resolved, str):
+            continue
+        value = resolved[1]
+        quote_matches = issue.quote is not None and _quote_matches(issue.quote, value)
+        rows.append(
+            {
+                "item_id": item_id,
+                "field_path": issue.field_path,
+                "value": value,
+                "quote_matches": quote_matches,
+            }
+        )
+        if quote_matches:
+            exact_matches.append(item_id)
+    return {
+        "field_path": issue.field_path,
+        "items": rows,
+        "exact_quote_match_item_ids": exact_matches,
+    }
+
+
 def _items_by_id(target_payload: str) -> dict[str, Mapping[str, object]]:
     """Index a candidate's items by item id so citations resolve inside one item."""
 
@@ -976,6 +1021,7 @@ def _host_issues_for_items(
     expected_volume_count: int | None = None,
     expected_target_chapters: int | None = None,
     accepted_obligation_ids: frozenset[str] | None = None,
+    accepted_owner_ids: frozenset[str] | None = None,
     accepted_obligation_windows: Mapping[str, tuple[int | None, int | None]] | None = None,
     author_constraints: Sequence[AuthorConstraint] = (),
 ) -> list[PlanReviewIssue]:
@@ -1118,6 +1164,7 @@ def _host_issues_for_items(
             mode=mode,
             item_kind=str(raw.get("kind") or "").lower(),
             accepted_obligation_ids=accepted_obligation_ids,
+            accepted_owner_ids=accepted_owner_ids,
         )
     if (
         mode is AgentMode.ARC_VOLUME
@@ -1611,6 +1658,7 @@ def _append_obligation_contract_issues(
     mode: AgentMode,
     item_kind: str = "",
     accepted_obligation_ids: frozenset[str] | None = None,
+    accepted_owner_ids: frozenset[str] | None = None,
 ) -> None:
     """Surface unreadable obligation shapes before the candidate is accepted.
 
@@ -1650,6 +1698,21 @@ def _append_obligation_contract_issues(
     discrepancies.extend(
         f"OBLIGATION_DECLARATION_UNREADABLE: {discrepancy}" for discrepancy in parse.discrepancies
     )
+    if mode in {AgentMode.STORY, AgentMode.ARC_VOLUME}:
+        discrepancies.extend(
+            "OBLIGATION_OWNER_MISSING: "
+            f"declaration[{index}] requires at least one canonical World entity owner_id"
+            for index, declaration in enumerate(parse.declarations)
+            if not declaration.owner_ids
+        )
+        if accepted_owner_ids is not None:
+            discrepancies.extend(
+                "OBLIGATION_OWNER_UNKNOWN: "
+                f"declaration[{index}] references unknown World entity {owner_id}"
+                for index, declaration in enumerate(parse.declarations)
+                for owner_id in declaration.owner_ids
+                if owner_id not in accepted_owner_ids
+            )
     declarations = payload.get("obligation_declarations")
     if declarations and mode in {
         AgentMode.CHAPTER_SET,
@@ -1755,6 +1818,8 @@ def _append_history_need_issues(
                     "explicit history_retrieval decision",
                     item_id,
                     blocking=True,
+                    field_path="history_retrieval",
+                    constraint_id="host.history_retrieval",
                 )
             )
         return
@@ -1766,6 +1831,8 @@ def _append_history_need_issues(
                     "HISTORY_RETRIEVAL_INVALID: history_retrieval must be an object",
                     item_id,
                     blocking=True,
+                    field_path="history_retrieval",
+                    constraint_id="host.history_retrieval",
                 )
             )
             return
@@ -1778,10 +1845,68 @@ def _append_history_need_issues(
                     f"HISTORY_RETRIEVAL_INVALID: {error}",
                     item_id,
                     blocking=True,
+                    field_path="history_retrieval",
+                    constraint_id="host.history_retrieval",
                 )
             )
             return
         _append_history_waiver_issues(issues, decision, chapter, item_id)
+        if decision.requirement is HistoryRetrievalRequirement.REQUIRED:
+            target_texts = tuple(
+                text
+                for value in (
+                    payload.get("summary"),
+                    payload.get("beats"),
+                    payload.get("state_changes"),
+                )
+                for text in (value if isinstance(value, list) else (value,))
+                if isinstance(text, str)
+            )
+            for index, need in enumerate(decision.needs):
+                if any(
+                    entity_id.root.startswith("planner-context.") for entity_id in need.entity_ids
+                ):
+                    issues.append(
+                        _host_issue(
+                            ReviewIssueKind.COVERAGE,
+                            "HISTORY_ENTITY_ID_NOT_CANONICAL: "
+                            f"history_retrieval.needs[{index}] must use canonical World entity ids",
+                            item_id,
+                            blocking=True,
+                            field_path="history_retrieval",
+                            constraint_id="host.history_retrieval.entity_identity",
+                        )
+                    )
+                if history_need_targets_same_chapter(need.query, target_texts):
+                    issues.append(
+                        _host_issue(
+                            ReviewIssueKind.COVERAGE,
+                            "HISTORY_NEED_TARGETS_FUTURE_EVENT: "
+                            f"history_retrieval.needs[{index}] asks Memory for the target "
+                            "chapter event instead of evidence available before it",
+                            item_id,
+                            blocking=True,
+                            field_path="history_retrieval",
+                            constraint_id="host.history_retrieval.source_cutoff",
+                        )
+                    )
+                if (
+                    not isinstance(chapter, int)
+                    or need.source_chapter_end is None
+                    or need.source_chapter_end >= chapter
+                ):
+                    issues.append(
+                        _host_issue(
+                            ReviewIssueKind.COVERAGE,
+                            "HISTORY_SOURCE_WINDOW_INVALID: "
+                            f"history_retrieval.needs[{index}].source_chapter_end must be "
+                            "earlier than the target chapter",
+                            item_id,
+                            blocking=True,
+                            field_path="history_retrieval",
+                            constraint_id="host.history_retrieval.source_window",
+                        )
+                    )
     if declared is None:
         return
     if not isinstance(declared, list):
@@ -2050,6 +2175,11 @@ class PlanReviewerAgent:
                 "存在且建议修改的 item_id; affected_item_ids 仍只表示比较证据。不得填写或复制"
                 "authorized_target_item_ids、authorized_operations、actual、expected、host_issued"
                 "或 verification_failures, 这些字段由宿主生成。"
+                "MODEL_FINDINGS_TO_RECHECK 中的 candidate_field_evidence 是宿主从本候选逐条抽取的"
+                "只读证据清单: 只能从其中复制真实 item_id、field_path 和 value 片段。若"
+                "exact_quote_match_item_ids 非空, 先把这些条目逐一放入 affected_item_ids 并为每个"
+                "条目填写 citations; proposed_target_item_ids 只列确实要修改的条目, 不要把比较基线"
+                "自动当作写入目标。若没有至少两个逐字命中的条目, 不得保留为跨条目 blocking。"
                 "若 decision 为 revise, 必须同时填写非空 revision_instruction。反馈不授予任何"
                 "写入权限, 也不改变候选或作者约束。\n"
                 + review_feedback.strip()
@@ -2077,6 +2207,11 @@ class PlanReviewerAgent:
                     None
                     if world is None
                     else frozenset(item.obligation_id.root for item in world.obligations)
+                ),
+                accepted_owner_ids=(
+                    None
+                    if world is None
+                    else frozenset(entity.entity_id.root for entity in world.entities)
                 ),
                 accepted_obligation_windows=(
                     None if world is None else obligation_stage_windows(world.obligations)
@@ -2126,6 +2261,11 @@ class PlanReviewerAgent:
                 if world is None
                 else frozenset(item.obligation_id.root for item in world.obligations)
             ),
+            accepted_owner_ids=(
+                None
+                if world is None
+                else frozenset(entity.entity_id.root for entity in world.entities)
+            ),
             accepted_obligation_windows=(
                 None if world is None else obligation_stage_windows(world.obligations)
             ),
@@ -2174,6 +2314,9 @@ class PlanReviewerAgent:
                     "unmet_condition": issue.unmet_condition,
                     "blocking_after_host_check": issue.blocking,
                     "candidate_field_values": _candidate_field_values_for_issue(
+                        target_payload, issue
+                    ),
+                    "candidate_field_evidence": _candidate_field_evidence_for_issue(
                         target_payload, issue
                     ),
                 }

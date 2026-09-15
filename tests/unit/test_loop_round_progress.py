@@ -120,6 +120,11 @@ def test_planner_failure_code_preserves_failure_semantics() -> None:
         TaskStatus.BLOCKED,
         CreativeRunTerminal.BLOCKED,
     )
+    revision_basis = CreativeRuntimeService._planner_failure(
+        PlanningTerminalStatus.BLOCKED,
+        "REVISION_PARENT_BASIS_MISMATCH",
+    )
+    assert revision_basis == basis
     contract = CreativeRuntimeService._planner_failure(
         PlanningTerminalStatus.BLOCKED,
         "PLANNER_STRUCTURED_OUTPUT_REJECTED",

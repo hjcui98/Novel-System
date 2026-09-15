@@ -580,11 +580,12 @@ def test_planner_and_writer_failure_branches_are_audited(
         result = asyncio.run(
             runtime.advance(draft.current_task_id, worker_id=f"writer.{writer_status.value}")
         )
-        assert result.terminal is (
-            CreativeRunTerminal.BLOCKED
-            if writer_status is WritingLoopTerminalStatus.BASIS_CHANGED
-            else CreativeRunTerminal.WAITING_RETRY
-        )
+        expected_terminal = {
+            WritingLoopTerminalStatus.MODEL_UNAVAILABLE: CreativeRunTerminal.WAITING_RETRY,
+            WritingLoopTerminalStatus.BASIS_CHANGED: CreativeRunTerminal.BLOCKED,
+            WritingLoopTerminalStatus.WRITER_FAILED: CreativeRunTerminal.REVIEW_REQUIRED,
+        }[writer_status]
+        assert result.terminal is expected_terminal
 
 
 def test_planner_yield_keeps_checkpoint_claimable_without_spending_retry_budget(
@@ -1036,7 +1037,8 @@ def test_unknown_task_kind_and_rejected_candidate_branches(
         ),
         policy=_policy(),
     )
-    assert rejected.terminal is CreativeRunTerminal.CANCELLED
+    assert rejected.terminal is CreativeRunTerminal.PROGRESSED
+    assert rejected.reason_code == "candidate_rejected_revision_ready"
     with pytest.raises(ValueError, match="cannot execute task kind"):
         unknown = commands.get_task(waiting.current_task_id).model_copy(
             update={"task_id": TaskId("run.reject-candidate.unknown"), "status": TaskStatus.READY}

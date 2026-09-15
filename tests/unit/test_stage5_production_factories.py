@@ -424,6 +424,9 @@ def test_production_writing_factory_builds_v2_request_from_exact_commit(
 
     assert request.writing_task.target_chapter == 21
     assert request.writing_task.chapter_goal.startswith("Enter the tower")
+    assert request.writing_task.required_beats == (
+        "Enter the tower while protecting the injured arm.",
+    )
     assert request.writing_task.pov == "Lin"
     assert isinstance(request.writer_context_package, WriterContextPackageV2)
     assert request.recent_prose_context.previous_chapter is not None

@@ -21,6 +21,13 @@ from novel_agent.domain.planning import (
     PlanningTurnDraft,
     PlanningTurnOutput,
 )
+from novel_agent.domain.retrieval_decision import (
+    FIRST_CHAPTER_WAIVER_REF,
+    HistoryRetrievalDecision,
+    HistoryRetrievalReasonCode,
+    HistoryRetrievalRequirement,
+    history_need_targets_same_chapter,
+)
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -126,6 +133,14 @@ INQUIRY_FULL_SCOPE_OUTPUT_CONSTRAINTS = (
     "relation_subject, relation_predicate, and relation_object entirely, or provide all three; "
     "never provide only one or two relation fields. PLANNING_SCOPE_CONSTRAINT=planning_scope "
     "must contain at least one string. "
+    "POST_GENESIS_MEMORY_CONSTRAINT=When WORLD_ENTITY_LABELS is present and "
+    "CONTROLLED_REVISION_INQUIRY is absent, this is not an "
+    "author questionnaire: include at least one concrete current/history fact or relation "
+    "question that Memory can retrieve, and ground it with an exact listed entity label in "
+    "entity_labels or an exact complete relation triple. Future plan choices about volume "
+    "boundaries, reveal timing, or milestones are not Memory facts; put genuinely unresolved "
+    "author choices in human_choices and do not emit them as fact questions. Never emit a "
+    "generic fact/relation question without an exact entity or complete relation binding. "
     "HORIZON_CONSTRAINT=For full-scope planning (STORY, ARC_VOLUME), set horizon_start and "
     "horizon_end to null."
 )
@@ -141,6 +156,11 @@ PLANNING_TURN_OUTPUT_CONSTRAINTS = (
     "and kind, never nested inside payload. For every unresolved item, omit issue_id entirely; "
     "the host assigns issue_id. Use parent_issue_id only for an authorized MODIFY or CLOSE, "
     "and never invent a parent identity. "
+    "REVISION_CONSTRAINT=If SOURCE_DATA contains a controlled revision directive and a "
+    "REVISION_PARENT_SCOPE, this is a bounded repair: return only the explicitly authorized "
+    "items and fields and return PLAN_READY; the host restores everything else from the "
+    "parent. Do not request Memory for the parent proposal or its fields; the scope is "
+    "control data, not a missing fact. "
     "Do not emit markdown, reasoning, or commentary outside JSON."
 )
 
@@ -379,6 +399,66 @@ class _ModelPlannerProposalDraft(PlannerProposalDraft):
             raise ValueError(
                 "Planner model output must omit issue_id; the host assigns unresolved identities"
             )
+        return self
+
+    @model_validator(mode="after")
+    def validate_chapter_set_history_contract(self) -> _ModelPlannerProposalDraft:
+        if self.mode is not AgentMode.CHAPTER_SET:
+            return self
+        for item in self.plan_items:
+            chapter_index = item.payload.get("chapter_index")
+            if not isinstance(chapter_index, int) or isinstance(chapter_index, bool):
+                continue
+            raw = item.payload.get("history_retrieval")
+            if chapter_index == 1 and raw is None:
+                continue
+            if not isinstance(raw, dict):
+                raise ValueError(
+                    f"chapter {chapter_index} requires a structured history_retrieval decision"
+                )
+            decision = HistoryRetrievalDecision.model_validate_json(json.dumps(raw))
+            if chapter_index == 1:
+                if (
+                    decision.requirement is not HistoryRetrievalRequirement.NOT_REQUIRED
+                    or decision.reason_code is not HistoryRetrievalReasonCode.FIRST_CHAPTER
+                    or decision.waiver_ref != FIRST_CHAPTER_WAIVER_REF
+                ):
+                    raise ValueError(
+                        "chapter 1 must omit history_retrieval or use the exact host "
+                        "first-chapter waiver"
+                    )
+                continue
+            if decision.requirement is not HistoryRetrievalRequirement.REQUIRED:
+                raise ValueError(
+                    f"chapter {chapter_index} model output must use REQUIRED history retrieval; "
+                    "a planning model cannot issue its own waiver"
+                )
+            target_texts = tuple(
+                text
+                for value in (
+                    item.payload.get("summary"),
+                    item.payload.get("beats"),
+                    item.payload.get("state_changes"),
+                )
+                for text in (value if isinstance(value, list) else (value,))
+                if isinstance(text, str)
+            )
+            for need in decision.needs:
+                if need.source_chapter_end is None or need.source_chapter_end >= chapter_index:
+                    raise ValueError(
+                        f"chapter {chapter_index} history Need must end before the target chapter"
+                    )
+                if any(
+                    entity_id.root.startswith("planner-context.unit.")
+                    for entity_id in need.entity_ids
+                ):
+                    raise ValueError(
+                        f"chapter {chapter_index} history Need contains a display-layer entity ID"
+                    )
+                if history_need_targets_same_chapter(need.query, target_texts):
+                    raise ValueError(
+                        f"chapter {chapter_index} history Need asks for its own future target event"
+                    )
         return self
 
 

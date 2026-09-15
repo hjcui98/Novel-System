@@ -6,10 +6,11 @@ import asyncio
 
 from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
 from novel_agent.domain.creative_runtime import CreativeRunResult
-from novel_agent.domain.ids import ProjectId, RunId
+from novel_agent.domain.ids import ArtifactId, ProjectId, RunId
 from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord
 from novel_agent.services.creative_runtime import CreativeRuntimeService
 from novel_agent.services.runtime_commands import RuntimeCommandConflictError
+from novel_agent.services.runtime_recovery import RuntimeRecoveryService
 
 
 class CreativeDispatcher:
@@ -22,6 +23,7 @@ class CreativeDispatcher:
         project_id: ProjectId | None = None,
         run_id: RunId | None = None,
         parallelism: int = 1,
+        recovery: RuntimeRecoveryService | None = None,
     ) -> None:
         if not worker_id:
             raise ValueError("dispatcher worker_id is required")
@@ -33,9 +35,31 @@ class CreativeDispatcher:
         self._project_id = project_id
         self._run_id = run_id
         self._parallelism = parallelism
+        self._recovery = recovery
+
+    def _prepare_one_recovery(self) -> bool:
+        if self._recovery is None:
+            return False
+        task = self._tasks.next_waiting_retry(
+            project_id=self._project_id,
+            run_id=self._run_id,
+        )
+        if task is None:
+            return False
+        try:
+            self._recovery.prepare(
+                task.task_id,
+                actor_id="production.dispatcher",
+                current_configuration_fingerprint=ArtifactId(task.policy_hash),
+            )
+        except RuntimeCommandConflictError:
+            return False
+        return True
 
     async def poll_one(self) -> CreativeRunResult | None:
         task_id = self._tasks.next_ready(project_id=self._project_id, run_id=self._run_id)
+        if task_id is None and self._prepare_one_recovery():
+            task_id = self._tasks.next_ready(project_id=self._project_id, run_id=self._run_id)
         if task_id is None:
             return None
         try:
@@ -64,6 +88,12 @@ class CreativeDispatcher:
                 project_id=self._project_id,
                 run_id=self._run_id,
             )
+            if not ready and self._prepare_one_recovery():
+                ready = self._tasks.ready_batch(
+                    limit=max(self._parallelism * 2, remaining),
+                    project_id=self._project_id,
+                    run_id=self._run_id,
+                )
             selected = self._parallel_batch(ready, limit=min(self._parallelism, remaining))
             if not selected:
                 break

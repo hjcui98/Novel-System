@@ -85,6 +85,7 @@ class ObligationDeclarationInput:
     setup_window: ChapterWindow | None
     progress_windows: tuple[ChapterWindow, ...]
     payoff_window: ChapterWindow | None
+    owner_ids: tuple[str, ...]
 
     def as_binder_payload(self) -> dict[str, Any]:
         """Return the declaration mapping the existing binder consumes."""
@@ -93,6 +94,7 @@ class ObligationDeclarationInput:
             "kind": self.kind.value,
             "summary": self.description,
             "not_before_chapter": self.not_before_chapter,
+            "owner_ids": list(self.owner_ids),
         }
 
     def as_source_record(self) -> dict[str, Any]:
@@ -260,6 +262,7 @@ def compile_legacy_obligation_plan(value: object) -> ObligationDeclarationCompil
                 else None
             )
             progress = _progress_windows(entry.get("progress_windows"), ordinal=ordinal)
+            owners = _declaration_owners(entry, label=f"obligation_plan[{ordinal}]")
             not_before_raw = entry.get("not_before_chapter")
             not_before: int | None = None
             if not_before_raw is not None:
@@ -292,6 +295,7 @@ def compile_legacy_obligation_plan(value: object) -> ObligationDeclarationCompil
                 setup_window=setup,
                 progress_windows=progress,
                 payoff_window=payoff,
+                owner_ids=owners,
             )
         )
     return ObligationDeclarationCompilation(
@@ -571,6 +575,7 @@ def parse_obligation_declarations(
                     description=declaration.description,
                     source_form="obligation_plan",
                     not_before_chapter=declaration.not_before_chapter,
+                    owner_ids=declaration.owner_ids,
                 )
             )
     return ObligationDeclarationParse(

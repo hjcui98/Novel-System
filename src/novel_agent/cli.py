@@ -1045,15 +1045,18 @@ def main(argv: Sequence[str] | None = None) -> int:
             ):
                 raise ValueError("acceptance command does not match the selected CLI operation")
             artifacts = ArtifactRepository(FilesystemObjectStore(args.object_store_root))
-            acceptance_receipt = RuntimeAcceptanceService(
+            acceptance_service = RuntimeAcceptanceService(
                 commands, CommitService(factory), artifacts
-            ).submit(acceptance_command, policy=policy)
+            )
+            acceptance_receipt = acceptance_service.submit(acceptance_command, policy=policy)
             acceptance_task = commands.get_task(acceptance_command.task_id)
             successor = None
             if acceptance_receipt.accepted_binding is not None:
                 successor = commands.create_task(
                     commit_task_from_acceptance(acceptance_task, acceptance_receipt)
                 )
+            else:
+                successor = acceptance_service.rejection_successor(acceptance_command)
             print(
                 json.dumps(
                     {

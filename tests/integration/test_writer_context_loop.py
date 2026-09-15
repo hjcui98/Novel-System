@@ -1798,6 +1798,55 @@ def test_short_writer_output_becomes_a_retryable_writer_failure(
     assert "shorter than trusted WritingTask minimum" in result.failure_detail
 
 
+def test_long_form_length_recovery_uses_complete_replacement_not_appended_fragment(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "length-replacement"))
+    base = _request(artifacts, "length-replacement")
+    request = base.model_copy(
+        update={
+            "writing_task": base.writing_task.model_copy(
+                update={
+                    "length_policy": WritingLengthPolicy(
+                        minimum_characters=1_000,
+                        target_characters=1_100,
+                        maximum_characters=1_300,
+                    )
+                }
+            )
+        }
+    )
+    short = "短稿在这里提前结束。"
+    replacement = "他压住呼吸，重新校准每一次挥刀的轨迹。" * 55  # noqa: RUF001
+    assert 1_000 <= len(replacement) <= 1_300
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.PASS,
+        artifact_repository=artifacts,
+        writer_turns=(_writer_turn(short), _writer_turn(replacement)),
+    )
+
+    result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+
+    assert result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert result.final_text_artifact is not None
+    assert artifacts.read_verified(result.final_text_artifact).decode() == replacement
+    endpoint = cast(
+        SequenceEndpoint,
+        loop._cognition._gateway.endpoint_adapter(ModelRole.BATCH_TEST),
+    )
+    assert "完整替代稿" in endpoint.requests[2].prompt
+    assert "只输出续写片段" in endpoint.requests[2].prompt
+    response_schema = endpoint.requests[2].response_schema
+    assert response_schema is not None
+    assert response_schema["properties"]["action"]["const"] == "DRAFT_READY"
+    assert response_schema["properties"]["draft_text"]["minLength"] == 1_000
+    assert response_schema["properties"]["draft_text"]["maxLength"] == 1_300
+
+
 def test_observer_and_cognition_require_admission_and_fail_closed(tmp_path: Path) -> None:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "agent-errors"))
     request = _request(artifacts, "agent-errors")

@@ -2,7 +2,7 @@
 
 将已接纳的故事方向细化为完整分卷架构、角色与关系弧线、情节线推进阶段与承诺排期。严格遵守 `PLANNING_PHASE`：inquiry 仅返回 `PlanningInquiryDraft`，plan 仅返回 `PlannerProposalDraft`。所有内容必须遵守受信 `ProjectProfile` language。
 
-当 `SOURCE_DATA` 同时提供 `PARENT_PROPOSAL`、`REVIEW` 和 `REVISION_SCOPE` 时，这是一个有界修订请求，不是重新复制或另起一份方案：以 `PARENT_PROPOSAL` 为基线输出完整的 `plan_items`，只在 `REVISION_SCOPE` 点名的 item/字段内修复已核验问题。每个被点名的字段必须产生具体、可观察的内容变化；不得原样返回被引用的缺陷文本，也不得因为不确定而返回未变化的目标字段。对结构化叙事键，保留其合法的 `window`、`role`、`serves`，只重写被授权的 `description`；未点名的 item 和字段逐字保留。宿主仍会独立裁剪并核验范围，模型不得把范围文字当作写入权限。
+当 `SOURCE_DATA` 提供受控修订指令和 `REVISION_PARENT_SCOPE` 时，这是一个有界修订请求，不是重新复制或另起一份方案：只输出 scope 点名的 item/字段，未点名内容由宿主从父候选逐字恢复。每个被点名的字段必须产生具体、可观察的内容变化；不得原样返回被引用的缺陷文本，也不得因为不确定而返回未变化的目标字段。对结构化叙事键，只改被授权字段。宿主仍会独立组合并核验范围，模型不得把范围文字当作写入权限。
 
 ARC_VOLUME（包括有界修订）的顶层输出只使用 `mode`、`plan_items`、`unresolved` 和
 `coverage`；必须显式返回 `project_intent_items: []`、`world_design_items: []`、
@@ -11,6 +11,8 @@ ARC_VOLUME（包括有界修订）的顶层输出只使用 `mode`、`plan_items`
 放入 bootstrap 专用的 `project_intent_items`，不要输出 bootstrap intent 或 strategy。
 
 硬性结构要求：每个卷 item 必须填写 `opening_state`、`trigger_event`、`first_escalation`、`first_cost`、`midpoint_reversal`、`second_escalation`、`volume_climax`、`climax_cost`、`ending_state`、`next_volume_hook`、`protagonist_arc`、`supporting_arc`、`faction_arc`、`capability_ceiling`、`equipment_ceiling`、`entry_conditions`、`exit_conditions`、`reveal_window`、`obligation_plan` 全部非空；卷范围必须连续覆盖 1..`target_chapters` 且数量等于 `expected_volume_count`。无法安全规划时返回结构化 `unresolved`（blocking=true，kind 取自 AUTHOR_INTENT_CONFLICT / CURRENT_STATE_UNKNOWN / POWER_LEVEL_UNKNOWN / KNOWLEDGE_BOUNDARY_UNKNOWN），不要以不完整 coverage 宣称 PLAN_READY。
+
+`obligation_plan` 的每条责任必须包含非空 `owner_ids`，且只能使用 SOURCE_DATA 中逐字存在的 canonical World entity ID；名称、`planner-context.*` 展示句柄和自造 ID 都不合法。`owner_ids` 表示必须持续追踪其状态以判断该责任是否设立、推进或兑现的叙事主体/检索锚点；奖励授予者、导师、信息持有者、地点或偶然参与者不是 owner，除非该实体自身的持续状态就是责任的一部分。多条责任可以基于事实绑定同一主体，不得为了多样性改绑其他实体。
 
 `unresolved` 条目必须有界：若摘要中提到任何章节区间（例如“第二卷（第101-200章）”），必须同时用 `affected_chapters` 逐章声明该区间（整数列表）；宿主会把摘要里的章节窗口与 `affected_chapters` 对照，缺少声明即 `UNRESOLVED_SCOPE_MISSING` 阻断。不确定影响范围时，不要以 advisory 形式提出。
 

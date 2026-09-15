@@ -5,9 +5,10 @@ from __future__ import annotations
 from datetime import datetime
 from decimal import Decimal
 from enum import StrEnum
-from typing import Annotated, Literal
+from functools import lru_cache
+from typing import Annotated, Literal, cast
 
-from pydantic import Field, StringConstraints, model_validator
+from pydantic import Field, StringConstraints, create_model, model_validator
 
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.base import DomainModel
@@ -432,6 +433,33 @@ class WriterTurnOutput(DomainModel):
         if len({item.request_id for item in self.memory_requests}) != len(self.memory_requests):
             raise ValueError("Writer memory request ids must be unique")
         return self
+
+
+@lru_cache(maxsize=32)
+def writer_length_repair_output_type(
+    minimum_characters: int,
+    maximum_characters: int,
+) -> type[WriterTurnOutput]:
+    """Build the task-bound JSON schema for a complete length-repair draft."""
+
+    if minimum_characters < 1 or maximum_characters < minimum_characters:
+        raise ValueError("Writer length-repair bounds are invalid")
+    draft_text = Annotated[
+        str,
+        StringConstraints(
+            min_length=minimum_characters,
+            max_length=maximum_characters,
+        ),
+    ]
+    output_type = create_model(
+        f"WriterLengthRepairOutput_{minimum_characters}_{maximum_characters}",
+        __base__=WriterTurnOutput,
+        __module__=__name__,
+        action=(Literal[WriterTurnAction.DRAFT_READY], WriterTurnAction.DRAFT_READY),
+        draft_text=(draft_text, ...),
+    )
+    output_type.model_rebuild(_types_namespace=globals())
+    return cast(type[WriterTurnOutput], output_type)
 
 
 class WriterWorkPlanResult(DomainModel):

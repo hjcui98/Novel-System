@@ -44,6 +44,7 @@ from novel_agent.domain.memory_write import (
     MemoryWriteWorkflowStatus,
 )
 from novel_agent.domain.model_calls import ModelCallLedgerEntry, ModelCallLedgerStatus
+from novel_agent.domain.planning import PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE
 from novel_agent.domain.runtime import (
     MODEL_CALL_RECONCILIATION_MEDIA_TYPE,
     STAGE5_EVENT_SCHEMA_VERSION,
@@ -244,6 +245,63 @@ class RuntimeCommandService:
             )
             self._insert_task(session, task, now)
             return task
+
+    def repair_unclaimed_draft_dependencies(
+        self,
+        task_id: TaskId,
+        *,
+        dependency_task_ids: tuple[TaskId, ...],
+    ) -> TaskRecord:
+        """Replace only the dependency edge of an unclaimed Draft task.
+
+        This is an event-replay-safe compatibility repair for a task that was
+        durably created by an earlier runtime with an unsatisfiable dependency.
+        It cannot rewrite inputs, generation, basis, or any claimed work.
+        """
+
+        if len(set(dependency_task_ids)) != len(dependency_task_ids):
+            raise RuntimeCommandConflictError("draft dependency repair contains duplicates")
+        now = datetime.now(UTC)
+        with self._session_factory() as session, session.begin():
+            task = self._load_task(session, task_id, lock=True)
+            if (
+                task.kind is not TaskKind.DRAFT_CANDIDATE
+                or task.status is not TaskStatus.READY
+                or task.task_revision != 0
+                or task.current_attempt_id is not None
+                or task.paused
+                or task.superseded
+            ):
+                raise RuntimeCommandConflictError(
+                    "only an unclaimed initial Draft candidate may repair dependencies"
+                )
+            dependencies = tuple(
+                self._load_task(session, dependency_id, lock=False)
+                for dependency_id in dependency_task_ids
+            )
+            if any(dependency.status is not TaskStatus.SUCCEEDED for dependency in dependencies):
+                raise RuntimeCommandConflictError(
+                    "repaired Draft dependencies must already be succeeded"
+                )
+            repaired = task.model_copy(update={"dependency_task_ids": dependency_task_ids})
+            if repaired == task:
+                return task
+            digest = hashlib.sha256(
+                ":".join(dependency.root for dependency in dependency_task_ids).encode()
+            ).hexdigest()[:24]
+            self._update_task(session, repaired, now)
+            self._append(
+                session,
+                repaired.run_id,
+                repaired.task_id,
+                RunEventType.RUNTIME_TASK_CREATED,
+                TaskCreatedPayload(task=repaired).model_dump(mode="json"),
+                _bounded_runtime_identity(
+                    f"{repaired.task_id.root}.dependency-repair.{digest}",
+                    f"dependency-repair.{repaired.run_id.root}.{digest}",
+                ),
+            )
+            return repaired
 
     def supersede_task(self, task_id: TaskId, *, reason: str) -> TaskRecord:
         if not reason or len(reason) > 512:
@@ -698,12 +756,20 @@ class RuntimeCommandService:
             )
             self._update_attempt(session, settled_attempt)
             self._update_task(session, settled_task, now)
-            # Parsing alone is not consumption. Only a durable terminal output
-            # settles the logical phase, and this SQL update commits with the
-            # attempt/task projection. An interrupted phase keeps its raw replay
-            # frontier even when its provider response parsed successfully.
+            checkpoint_consumes_responses = self._planning_checkpoint_covers_responses(
+                session,
+                task.task_id,
+                artifact_refs,
+            )
+            # Parsing alone is not consumption. A durable terminal output or a
+            # planning checkpoint whose cumulative call count exactly covers the
+            # completed ledger settles the logical phase. A response produced
+            # after the latest checkpoint remains an explicit replay frontier.
             if (
-                settled_status in {TaskStatus.SUCCEEDED, TaskStatus.WAITING_INPUT}
+                (
+                    settled_status in {TaskStatus.SUCCEEDED, TaskStatus.WAITING_INPUT}
+                    or checkpoint_consumes_responses
+                )
                 and artifact_refs
                 and self._artifacts is not None
             ):
@@ -713,14 +779,16 @@ class RuntimeCommandService:
                 except (KeyError, ValueError):
                     pass
                 else:
-                    for row in session.scalars(
-                        select(ModelCallLedgerRow).where(
-                            ModelCallLedgerRow.task_id == task.task_id.root,
-                            ModelCallLedgerRow.attempt_id == attempt.attempt_id.root,
-                            ModelCallLedgerRow.status == ModelCallLedgerStatus.COMPLETED.value,
-                            ModelCallLedgerRow.response_consumed_at.is_(None),
+                    completed = select(ModelCallLedgerRow).where(
+                        ModelCallLedgerRow.task_id == task.task_id.root,
+                        ModelCallLedgerRow.status == ModelCallLedgerStatus.COMPLETED.value,
+                        ModelCallLedgerRow.response_consumed_at.is_(None),
+                    )
+                    if not checkpoint_consumes_responses:
+                        completed = completed.where(
+                            ModelCallLedgerRow.attempt_id == attempt.attempt_id.root
                         )
-                    ):
+                    for row in session.scalars(completed):
                         row.response_consumed_at = now
                     for request_id in self._replay_request_ids(replay_evidence_refs):
                         replay_row = session.get(ModelCallLedgerRow, request_id)
@@ -770,6 +838,38 @@ class RuntimeCommandService:
             )
             self._insert_successor_tasks(session, settled_task, successor_tasks, now)
             return settled_task
+
+    def _planning_checkpoint_covers_responses(
+        self,
+        session: Session,
+        task_id: TaskId,
+        artifact_refs: tuple[ArtifactRef, ...],
+    ) -> bool:
+        if self._artifacts is None:
+            return False
+        represented_calls: list[int] = []
+        for ref in artifact_refs:
+            if ref.media_type != PLANNING_LOOP_CHECKPOINT_MEDIA_TYPE:
+                continue
+            try:
+                payload = json.loads(self._artifacts.read_verified(ref))
+            except (KeyError, TypeError, ValueError):
+                continue
+            count = payload.get("model_calls_used") if isinstance(payload, dict) else None
+            if isinstance(count, int) and count >= 0:
+                represented_calls.append(count)
+        if not represented_calls:
+            return False
+        rows = tuple(
+            session.scalars(
+                select(ModelCallLedgerRow).where(ModelCallLedgerRow.task_id == task_id.root)
+            )
+        )
+        return (
+            bool(rows)
+            and all(row.status == ModelCallLedgerStatus.COMPLETED.value for row in rows)
+            and max(represented_calls) == len(rows)
+        )
 
     def settle_gap_and_create_maintenance(
         self,
@@ -2041,9 +2141,26 @@ class RuntimeCommandService:
         with self._session_factory() as session, session.begin():
             task = self._load_task(session, task_id, lock=True)
             self._require_observed_revision(task, observed_revision)
-            if task.status is not TaskStatus.BLOCKED or task.block_cause is None:
-                raise RuntimeCommandConflictError("unblock requires a recorded block cause")
-            if _digest(task.block_cause) != block_cause_fingerprint:
+            if task.current_attempt_id is not None:
+                raise RuntimeCommandConflictError("unblock requires inactive work")
+            if task.status is TaskStatus.BLOCKED and task.block_cause is not None:
+                repair_cause = task.block_cause
+            elif task.status is TaskStatus.RECOVERY_PENDING:
+                latest = session.scalars(
+                    select(RuntimeTaskAttemptRow)
+                    .where(RuntimeTaskAttemptRow.task_id == task_id.root)
+                    .order_by(RuntimeTaskAttemptRow.attempt_no.desc())
+                    .limit(1)
+                ).first()
+                if latest is None:
+                    raise RuntimeCommandConflictError("recovery unblock requires a settled attempt")
+                attempt = TaskAttempt.model_validate_json(json.dumps(latest.attempt_json))
+                repair_cause = (attempt.failure_class or FailureClass.UNKNOWN).value
+            else:
+                raise RuntimeCommandConflictError(
+                    "unblock requires a recorded block or recovery cause"
+                )
+            if _digest(repair_cause) != block_cause_fingerprint:
                 raise RuntimeCommandConflictError("block cause fingerprint is stale")
             writer_generation_after = (
                 0

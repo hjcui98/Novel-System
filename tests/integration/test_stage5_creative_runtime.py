@@ -19,6 +19,7 @@ from novel_agent.adapters.runtime.isolated import (
 )
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
+    DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE,
     OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
     AcceptanceCommand,
     AcceptanceDecision,
@@ -319,6 +320,70 @@ def _accept(
     )
     assert result.current_task_id is not None
     return result.current_task_id
+
+
+def test_rejected_draft_creates_same_run_writer_revision(
+    creative_kernel: tuple[
+        CreativeRuntimeService,
+        RuntimeCommandService,
+        CreativeRunPolicy,
+        CommitId,
+    ],
+) -> None:
+    runtime, commands, policy, base = creative_kernel
+    start = runtime.start(
+        CreativeRunRequest(
+            run_id=RunId("run.draft-revision"),
+            project_id=ProjectId("project.test"),
+            basis_commit=base,
+            policy=policy,
+            target_chapters=1,
+        )
+    )
+    waiting_plan = asyncio.run(runtime.advance(start.current_task_id, worker_id="planner"))  # type: ignore[arg-type]
+    plan_commit = _accept(
+        runtime,
+        commands,
+        policy,
+        waiting_plan.current_task_id,  # type: ignore[arg-type]
+        kind=CandidateKind.PLAN,
+        number=90,
+    )
+    projection = asyncio.run(runtime.advance(plan_commit, worker_id="commit"))
+    draft = asyncio.run(runtime.advance(projection.current_task_id, worker_id="projection"))  # type: ignore[arg-type]
+    waiting_draft = asyncio.run(runtime.advance(draft.current_task_id, worker_id="writer"))  # type: ignore[arg-type]
+    assert waiting_draft.current_task_id is not None
+    task = commands.get_task(waiting_draft.current_task_id)
+    candidate = runtime._candidate_for_task(task)
+
+    result = runtime.submit_acceptance(
+        AcceptanceCommand(
+            command_id=StableId("reject.draft-revision"),
+            project_id=task.project_id,
+            run_id=task.run_id,
+            task_id=task.task_id,
+            candidate=candidate,
+            acceptance_policy_hash=policy.policy_hash,
+            actor_kind=ActorKind.OPERATOR,
+            actor_id="operator.test",
+            decision=AcceptanceDecision.REJECT,
+            reason="future chapter content was consumed early",
+            expected_project_commit=task.basis_commit,
+            idempotency_identity=StableId("reject.draft-revision.identity"),
+            issued_at=NOW,
+        ),
+        policy=policy,
+    )
+
+    assert result.current_task_id == TaskId("run.draft-revision.draft.1.g1")
+    revised = commands.get_task(result.current_task_id)
+    assert revised.kind is TaskKind.DRAFT_CANDIDATE
+    assert revised.status is TaskStatus.READY
+    assert revised.writer_generation == 1
+    assert any(
+        ref.media_type == DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE
+        for ref in revised.input_artifact_refs
+    )
 
 
 def test_three_chapter_fixed_topology_uses_accept_commit_and_exact_freshness(

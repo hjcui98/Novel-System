@@ -516,7 +516,10 @@ def test_volume_stage_grid_binds_free_text_slots_to_their_own_stage() -> None:
     middle = project([node], 5)
     closing = project([node], 9)
 
-    assert "当前卷阶段[卷首:entry_conditions]：必须已取得铜铭" in opening  # noqa: RUF001
+    assert any(  # noqa: RUF001
+        item.startswith("当前卷阶段[卷首目标:entry_conditions]：必须已取得铜铭")
+        for item in opening
+    )
     assert "当前卷阶段[整卷:capability_ceiling]：不得突破三阶开脉" in opening  # noqa: RUF001
     assert any("出口未到期" in item for item in opening)
 

@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from collections.abc import Awaitable, Callable
 from contextlib import suppress
 from datetime import UTC, datetime
@@ -12,6 +13,8 @@ from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import PlanRootDocument
 from novel_agent.domain.changes import CommitRequest, CommitStatus, ValidationStatus
 from novel_agent.domain.creative_runtime import (
+    DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE,
+    OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
     AcceptanceCommand,
     AcceptanceDecision,
     AcceptanceReceipt,
@@ -91,6 +94,7 @@ from novel_agent.services.runtime_commands import (
 
 CANDIDATE_BINDING_MEDIA_TYPE = "application/vnd.novel-agent.stage5-candidate-binding+json"
 WRITING_LOOP_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.writing-loop-result+json"
+WRITER_READINESS_DECISION_MEDIA_TYPE = "application/vnd.novel-agent.writer-readiness-decision+json"
 CHAPTER_SETTLEMENT_EXTERNAL_SYSTEM = "stage2w.chapter_reveal_atomic"
 AUTO_PLANNER_MEMORY_TRANCHE_LIMIT = 3
 CHAPTER_SETTLEMENT_RECONCILIATION_MEDIA_TYPE = (
@@ -100,6 +104,14 @@ QUARANTINE_PACKAGE_MEDIA_TYPE = "application/vnd.novel-agent.quarantine-package+
 MEMORY_REPAIR_FINDING_MEDIA_TYPE = "application/vnd.novel-agent.memory-repair-finding+json"
 MEMORY_WRITE_RESULT_MEDIA_TYPE = "application/vnd.novel-agent.memory-write-workflow-result+json"
 SCHEDULING_WAIT_MEDIA_TYPE = "application/vnd.novel-agent.model-scheduling-wait+json"
+_REVISION_LINEAGE_MEDIA_TYPES = frozenset(
+    {
+        "application/vnd.novel-agent.author-revision-directive+json",
+        "application/vnd.novel-agent.operator-revision-directive+json",
+        OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+        "application/vnd.novel-agent.plan-proposal+json",
+    }
+)
 
 
 class CreativeRuntimeService:
@@ -210,7 +222,257 @@ class CreativeRuntimeService:
             return self._repair_post_draft_projection(task)
         if task.status is TaskStatus.BUDGET_REVIEW:
             return self._auto_extend_budget(task)
+        if (
+            task.kind is TaskKind.DRAFT_CANDIDATE
+            and task.status is TaskStatus.BLOCKED
+            and task.block_cause == FailureClass.LEAF_REVIEW_REQUIRED.value
+        ):
+            return self._recover_failed_editorial_candidate(task)
+        if task.kind is TaskKind.DRAFT_CANDIDATE and task.status is TaskStatus.READY:
+            return self._repair_automatic_editorial_retry_dependencies(task)
+        if task.kind is TaskKind.DRAFT_CANDIDATE and task.status is TaskStatus.WAITING_RETRY:
+            return self._recover_legacy_writer_length_failure(task)
         return None
+
+    def _recover_failed_editorial_candidate(
+        self,
+        task: TaskRecord,
+    ) -> CreativeRunResult | None:
+        """Create one bounded next-generation Writer retry from settled Editor evidence."""
+
+        if any(self._is_automatic_editorial_retry(ref) for ref in task.input_artifact_refs):
+            return None
+        result_ref = next(
+            (
+                ref
+                for ref in reversed(task.terminal_artifact_refs)
+                if ref.media_type == WRITING_LOOP_RESULT_MEDIA_TYPE
+            ),
+            None,
+        )
+        if result_ref is None:
+            return None
+        try:
+            result = WritingLoopResult.model_validate_json(
+                self._artifacts.read_verified(result_ref)
+            )
+        except (KeyError, ValueError):
+            return None
+        if result.status not in {
+            WritingLoopTerminalStatus.REVIEW_REQUIRED_LOCAL_REPAIR_EXHAUSTED,
+            WritingLoopTerminalStatus.REVIEW_REQUIRED_MAJOR_REWRITE_EXHAUSTED,
+        }:
+            return None
+        if result.final_text_artifact is None or not result.editorial_reports:
+            return None
+        final_report = result.editorial_reports[-1]
+        issue_reasons = tuple(issue.description for issue in final_report.issues)
+        reason = "; ".join(issue_reasons)[:480] or (
+            result.failure_detail or "independent Editor review did not pass"
+        )
+        directive = {
+            "directive_id": bounded_runtime_identity(
+                f"editorial-retry.{task.task_id.root}",
+                f"editorial-retry.{task.run_id.root}.{task.writer_generation}",
+            ).root,
+            "kind": "draft_revision",
+            "actor_kind": ActorKind.POLICY.value,
+            "actor_id": "pinned-runtime-policy",
+            "recovery_kind": "automatic_editorial_retry",
+            "run_id": task.run_id.root,
+            "project_id": task.project_id.root,
+            "rejected_task_id": task.task_id.root,
+            "target_chapter": task.chapter_index,
+            "rejected_candidate_ref": result.final_text_artifact.model_dump(mode="json"),
+            "source_writing_result_ref": result_ref.model_dump(mode="json"),
+            "source_editorial_report_id": final_report.report_id.root,
+            "reason": reason,
+            "required_action": "rewrite_complete_chapter_and_re_review",
+        }
+        directive_ref = self._artifacts.put(
+            canonical_json_bytes(directive),
+            DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE,
+            SchemaVersion("1.0.0"),
+        )
+        generation = task.writer_generation + 1
+        suffix = f"draft.{task.chapter_index}.g{generation}"
+        revised = task.model_copy(
+            update={
+                "task_id": TaskId(
+                    bounded_runtime_identity(
+                        f"{task.run_id.root}.{suffix}",
+                        suffix,
+                        f"draft.{task.run_id.root}.{generation}",
+                    ).root
+                ),
+                "task_revision": 0,
+                "status": TaskStatus.READY,
+                "current_attempt_id": None,
+                "candidate_binding_ref": None,
+                "terminal_artifact_refs": (),
+                "block_cause": None,
+                # The failed Writer/Editor task is immutable evidence, but it is
+                # not a satisfiable scheduling dependency.  Reuse its already
+                # satisfied upstream dependencies and carry the failed-task
+                # lineage in the revision directive above.
+                "dependency_task_ids": task.dependency_task_ids,
+                "input_artifact_refs": (result.final_text_artifact, directive_ref),
+                "writer_generation": generation,
+                "affects_future_plan": None,
+                "superseded": False,
+            }
+        )
+        # Create first, then supersede. Both operations are idempotent, and this order leaves a
+        # runnable successor if the local process stops between the two durable writes.
+        revised = self._commands.create_task(revised)
+        self._commands.supersede_task(
+            task.task_id,
+            reason="superseded by one bounded automatic editorial retry",
+        )
+        return self._result(
+            revised,
+            CreativeRunTerminal.PROGRESSED,
+            "automatic_editorial_retry_ready",
+        )
+
+    def _repair_automatic_editorial_retry_dependencies(
+        self,
+        task: TaskRecord,
+    ) -> CreativeRunResult | None:
+        """Repair an unclaimed false-READY retry created by the earlier runtime."""
+
+        if not any(self._is_automatic_editorial_retry(ref) for ref in task.input_artifact_refs):
+            return None
+        if len(task.dependency_task_ids) != 1:
+            return None
+        rejected = self._commands.get_task(task.dependency_task_ids[0])
+        if (
+            rejected.kind is not TaskKind.DRAFT_CANDIDATE
+            or not rejected.superseded
+            or rejected.status is not TaskStatus.CANCELLED
+        ):
+            return None
+        repaired = self._commands.repair_unclaimed_draft_dependencies(
+            task.task_id,
+            dependency_task_ids=rejected.dependency_task_ids,
+        )
+        return self._result(
+            repaired,
+            CreativeRunTerminal.PROGRESSED,
+            "automatic_editorial_retry_dependencies_repaired",
+        )
+
+    def _is_automatic_editorial_retry(self, ref: ArtifactRef) -> bool:
+        if ref.media_type != DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE:
+            return False
+        try:
+            payload = self._artifacts.read_verified(ref)
+            directive = json.loads(payload)
+        except (KeyError, TypeError, ValueError):
+            return False
+        if not isinstance(directive, dict):
+            return False
+        recovery_kind = directive.get("recovery_kind")
+        return isinstance(recovery_kind, str) and recovery_kind == "automatic_editorial_retry"
+
+    def _recover_legacy_writer_length_failure(
+        self,
+        task: TaskRecord,
+    ) -> CreativeRunResult | None:
+        """Move one pre-fix deterministic length failure to a fresh request lineage."""
+
+        if any(self._is_automatic_length_retry(ref) for ref in task.input_artifact_refs):
+            return None
+        result_ref = next(
+            (
+                ref
+                for ref in reversed(task.terminal_artifact_refs)
+                if ref.media_type == WRITING_LOOP_RESULT_MEDIA_TYPE
+            ),
+            None,
+        )
+        if result_ref is None:
+            return None
+        try:
+            result = WritingLoopResult.model_validate_json(
+                self._artifacts.read_verified(result_ref)
+            )
+        except (KeyError, ValueError):
+            return None
+        detail = result.failure_detail or ""
+        if (
+            result.status is not WritingLoopTerminalStatus.WRITER_FAILED
+            or not detail.startswith("length repair exhausted its bounded continuation rounds")
+        ):
+            return None
+        directive = {
+            "directive_id": bounded_runtime_identity(
+                f"length-contract-retry.{task.task_id.root}",
+                f"length-contract-retry.{task.run_id.root}.{task.writer_generation}",
+            ).root,
+            "kind": "draft_revision",
+            "actor_kind": ActorKind.POLICY.value,
+            "actor_id": "pinned-runtime-policy",
+            "recovery_kind": "automatic_length_contract_retry",
+            "run_id": task.run_id.root,
+            "project_id": task.project_id.root,
+            "rejected_task_id": task.task_id.root,
+            "target_chapter": task.chapter_index,
+            "source_writing_result_ref": result_ref.model_dump(mode="json"),
+            "reason": detail[:480],
+            "required_action": "generate_complete_chapter_under_length_constrained_schema",
+        }
+        directive_ref = self._artifacts.put(
+            canonical_json_bytes(directive),
+            DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE,
+            SchemaVersion("1.0.0"),
+        )
+        generation = task.writer_generation + 1
+        suffix = f"draft.{task.chapter_index}.g{generation}"
+        revised = task.model_copy(
+            update={
+                "task_id": TaskId(
+                    bounded_runtime_identity(
+                        f"{task.run_id.root}.{suffix}",
+                        suffix,
+                        f"draft.{task.run_id.root}.{generation}",
+                    ).root
+                ),
+                "task_revision": 0,
+                "status": TaskStatus.READY,
+                "current_attempt_id": None,
+                "candidate_binding_ref": None,
+                "terminal_artifact_refs": (),
+                "block_cause": None,
+                "dependency_task_ids": task.dependency_task_ids,
+                "input_artifact_refs": (*task.input_artifact_refs, directive_ref),
+                "writer_generation": generation,
+                "affects_future_plan": None,
+                "superseded": False,
+            }
+        )
+        revised = self._commands.create_task(revised)
+        self._commands.supersede_task(
+            task.task_id,
+            reason="superseded by one length-contract schema recovery",
+        )
+        return self._result(
+            revised,
+            CreativeRunTerminal.PROGRESSED,
+            "automatic_length_contract_retry_ready",
+        )
+
+    def _is_automatic_length_retry(self, ref: ArtifactRef) -> bool:
+        if ref.media_type != DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE:
+            return False
+        try:
+            payload = json.loads(self._artifacts.read_verified(ref))
+        except (KeyError, TypeError, ValueError):
+            return False
+        return (
+            isinstance(payload, dict)
+            and payload.get("recovery_kind") == "automatic_length_contract_retry"
+        )
 
     def _recover_chapter_settlement(self, task: TaskRecord) -> CreativeRunResult:
         assert self._chapter_settlement is not None
@@ -574,17 +836,24 @@ class CreativeRuntimeService:
                     CreativeRunTerminal.BUDGET_REVIEW,
                     "writer_context_budget_exhausted",
                 )
-            except WriterContextInputNotReady:
+            except WriterContextInputNotReady as error:
+                decision_ref = self._artifacts.put(
+                    canonical_json_bytes(error.decision.model_dump(mode="json")),
+                    WRITER_READINESS_DECISION_MEDIA_TYPE,
+                    SchemaVersion("1.0.0"),
+                )
                 settled = self._commands.settle_attempt(
                     fence,
                     outcome=AttemptOutcome.FAILED,
                     terminal_status=TaskStatus.BLOCKED,
+                    artifact_refs=(decision_ref,),
                     failure_class=FailureClass.VALIDATION_REJECTED,
                 )
                 return self._result(
                     settled,
                     CreativeRunTerminal.REVIEW_REQUIRED,
-                    "writer_input_not_ready",
+                    "writer_input_not_ready:"
+                    + ",".join(reason.value for reason in error.decision.reason_codes),
                 )
             except ValueError:
                 settled = self._commands.settle_attempt(
@@ -1563,7 +1832,12 @@ class CreativeRuntimeService:
         receipt = self._acceptance.submit(command, policy=policy)
         task = self._commands.get_task(command.task_id)
         if receipt.accepted_binding is None:
-            return self._result(task, CreativeRunTerminal.CANCELLED, "candidate_rejected")
+            revised = self._acceptance.rejection_successor(command)
+            return self._result(
+                revised,
+                CreativeRunTerminal.PROGRESSED,
+                "candidate_rejected_revision_ready",
+            )
         commit_task = commit_task_from_acceptance(task, receipt)
         commit_task = self._commands.get_task(commit_task.task_id)
         return self._result(commit_task, CreativeRunTerminal.PROGRESSED, "candidate_accepted")
@@ -1672,6 +1946,7 @@ class CreativeRuntimeService:
             horizon_end=previous.horizon_end,
             plan_level=previous.plan_level,
             planning_generation=previous.planning_generation,
+            writer_generation=previous.writer_generation,
             protected_chapter_index=previous.protected_chapter_index,
             affects_future_plan=candidate.affects_future_plan,
             block_cause=block_cause,
@@ -1960,9 +2235,17 @@ class CreativeRuntimeService:
         if initial is None:
             request_inputs = self._request_planning_inputs.get(previous.run_id)
             if request_inputs:
-                return request_inputs
+                return tuple(
+                    ref
+                    for ref in request_inputs
+                    if ref.media_type not in _REVISION_LINEAGE_MEDIA_TYPES
+                )
             raise RuntimeError("run has no normal Planner input owner")
-        return initial.input_artifact_refs
+        return tuple(
+            ref
+            for ref in initial.input_artifact_refs
+            if ref.media_type not in _REVISION_LINEAGE_MEDIA_TYPES
+        )
 
     def _lookahead_task(
         self,
@@ -2508,6 +2791,7 @@ class CreativeRuntimeService:
             "POST_GENESIS_BASIS_MISMATCH",
             "RESUME_CHECKPOINT_BASIS_MISMATCH",
             "PROBLEM_IDENTITY_SEED_BASIS_MISMATCH",
+            "REVISION_PARENT_BASIS_MISMATCH",
             "BOOTSTRAP_RECEIVED_PROJECT_MEMORY",
         }:
             return FailureClass.BASIS_CHANGED, TaskStatus.BLOCKED, CreativeRunTerminal.BLOCKED
@@ -2522,7 +2806,7 @@ class CreativeRuntimeService:
                 TaskStatus.BUDGET_REVIEW,
                 CreativeRunTerminal.BUDGET_REVIEW,
             )
-        if code == "CONTEXT_LIMIT":
+        if code in {"CONTEXT_LIMIT", "PLANNER_CONTEXT_ASSEMBLY_ERROR"}:
             # The host could not assemble a request within the frozen context
             # contract.  Replaying the same immutable inputs cannot change that
             # result, and increasing attempts would only hide a deterministic
@@ -2617,15 +2901,20 @@ class CreativeRuntimeService:
     def _writer_failure(
         status: WritingLoopTerminalStatus,
     ) -> tuple[FailureClass, TaskStatus, CreativeRunTerminal]:
-        if status in {
-            WritingLoopTerminalStatus.MODEL_UNAVAILABLE,
-            WritingLoopTerminalStatus.WRITER_FAILED,
-            WritingLoopTerminalStatus.EDITOR_FAILED,
-        }:
+        if status is WritingLoopTerminalStatus.MODEL_UNAVAILABLE:
             return (
                 FailureClass.PROVIDER_TRANSIENT,
                 TaskStatus.WAITING_RETRY,
                 CreativeRunTerminal.WAITING_RETRY,
+            )
+        if status in {
+            WritingLoopTerminalStatus.WRITER_FAILED,
+            WritingLoopTerminalStatus.EDITOR_FAILED,
+        }:
+            return (
+                FailureClass.LEAF_SCHEMA_REJECTED,
+                TaskStatus.BLOCKED,
+                CreativeRunTerminal.REVIEW_REQUIRED,
             )
         if status is WritingLoopTerminalStatus.BASIS_CHANGED:
             return FailureClass.BASIS_CHANGED, TaskStatus.BLOCKED, CreativeRunTerminal.BLOCKED

@@ -16,6 +16,7 @@ from novel_agent.domain.generation import (
     WriterWorkPlan,
     WriterWorkPlanResult,
     WritingLoopRequest,
+    writer_length_repair_output_type,
 )
 from novel_agent.domain.ids import SchemaVersion, StableId
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
@@ -720,12 +721,12 @@ class WriterCognitionService:
         output: WriterTurnOutput,
         call: ModelCallRecord,
     ) -> tuple[WriterTurnOutput, ModelCallRecord]:
-        """Bounded host-side continuation for a short DRAFT_READY response.
+        """Bounded host-side full replacement for a short DRAFT_READY response.
 
-        Qwen can return a semantically complete scene well below a long-form character
-        contract.  Replaying the same task merely produces another short candidate, so the
-        recovery call asks for prose that continues from the exact final sentence and the host
-        combines the immutable response fragments before the regular candidate gate runs.
+        A short response is often already shaped like a complete chapter. Appending another
+        fragment after that false ending produced duplicated climaxes and contradictory scene
+        state. The recovery call therefore rewrites the whole candidate to the trusted length;
+        the host never concatenates independently closed prose fragments.
         """
 
         assert output.draft_text is not None
@@ -742,7 +743,6 @@ class WriterCognitionService:
         for round_number in range(1, _LENGTH_REPAIR_MAX_ROUNDS + 1):
             if len(combined) >= policy.minimum_characters:
                 break
-            remaining = policy.minimum_characters - len(combined)
             digest = hashlib.sha256(
                 f"{prepared.request_id.root}:length-repair-{round_number}".encode()
             ).hexdigest()[:48]
@@ -761,40 +761,45 @@ class WriterCognitionService:
                             f"目标为{policy.target_characters}字, "
                             f"上限为{policy.maximum_characters}字。\n"
                         )
-                        + f"请从当前草稿的最后一句之后继续本章, 至少补写约{remaining}字。"
-                        + "本轮 draft_text 字段只输出需要追加的沉浸式小说正文, 不得输出提纲、解释、"
-                        + "审校意见或内部标签; 不得复述当前草稿, 不得提前结束本章。"
-                        + "保持同一人物视角、"
-                        + "语言和已确认节拍, 直到合并后的正文达到最低长度。\n"
-                        + "<CURRENT_DRAFT>\n"
+                        + "请将当前短稿从头改写为一份完整、连贯且达到最低长度的本章正文。"
+                        + "本轮 draft_text 字段必须输出完整替代稿，不得只输出续写片段，"  # noqa: RUF001
+                        + "不得输出提纲、解释、审校意见或内部标签，也不得在中途制造一次假结尾"  # noqa: RUF001
+                        + "后重新开始同一场景。改写只能深化当前短稿已经出现的场景、动作、"
+                        + "感官和即时心理；不得新增人物、命名组织、亲属遗言或遗物、"  # noqa: RUF001
+                        + "身世背景、特殊物品、能力机制、世界规则、任务或下一章事件。"
+                        + "若现有素材不足，以动作受阻、重复训练产生的细微差异、环境压力和"  # noqa: RUF001
+                        + "当下选择扩展，不得用新设定填充篇幅。保持同一人物视角、"  # noqa: RUF001
+                        + "语言和已确认节拍，并让因果过程只推进一次，"  # noqa: RUF001
+                        + "直到完整替代稿达到最低长度。\n"
+                        + "<SHORT_DRAFT_TO_REWRITE>\n"
                         + combined
-                        + "\n</CURRENT_DRAFT>\n"
+                        + "\n</SHORT_DRAFT_TO_REWRITE>\n"
                         + "</WRITER_LENGTH_REPAIR>"
                     ),
                 }
             )
+            repair_output_type = writer_length_repair_output_type(
+                policy.minimum_characters,
+                policy.maximum_characters,
+            )
             repaired, repaired_call = await self._gateway.generate_structured(
                 repair_request,
-                WriterTurnOutput,
+                repair_output_type,
             )
             if repaired.action is not WriterTurnAction.DRAFT_READY or repaired.draft_text is None:
                 raise WriterCognitionError(
-                    "length repair must return DRAFT_READY with a continuation fragment"
+                    "length repair must return DRAFT_READY with a complete replacement"
                 )
             fragment = repaired.draft_text.strip()
-            if fragment.startswith(combined[: min(128, len(combined))]):
-                # Some providers echo the prefix while adding new prose. Treat that response as
-                # a replacement so the already-visible text is not duplicated by the host.
-                combined = fragment
-            else:
-                combined = f"{combined}\n\n{fragment}"
+            if len(fragment) <= len(combined):
+                # Keep the best complete candidate as the next bounded rewrite input. A shorter
+                # answer cannot make progress and must never be appended to manufacture length.
+                continue
+            combined = fragment
             if len(combined) > policy.maximum_characters:
-                if policy.minimum_characters <= len(fragment) <= policy.maximum_characters:
-                    combined = fragment
-                else:
-                    raise WriterCognitionError(
-                        "length repair exceeded the trusted WritingTask maximum"
-                    )
+                raise WriterCognitionError(
+                    "length repair exceeded the trusted WritingTask maximum"
+                )
             final_output = repaired
             final_call = repaired_call
 

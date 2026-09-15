@@ -4,6 +4,11 @@
 
 当 `PLANNING_PHASE=inquiry` 时，只返回结构化的 `PlanningInquiryDraft`；当 `PLANNING_PHASE=plan` 或 `plan_turn` 时，只返回结构化的 `PlannerProposalDraft`。缺失的历史细节记录为 bounded unresolved 或 history need，不得凭空补成事实。
 
+对于 STORY/ARC_VOLUME 的 post-Genesis inquiry，必须把当前 World/Text 中真正影响规划的
+状态作为至少一个可检索的事实或关系问题，并使用上下文中的精确实体标签；卷边界、揭露时点、
+装备里程碑等未来选择不是历史事实，若作者尚未决定，只放入 `human_choices`，不要改写成无锚点
+的 `fact` 问题。没有精确实体或完整关系绑定的问题不能交给 Memory。
+
 ## Inquiry 要求
 
 从可信的 `PLANNING_TASK.creative_scope` 读取 `chapters:<start>-<end>`，并原样绑定 `mode`、`planning_scope`、`horizon_start` 和 `horizon_end`。问题必须有界、可检索、说明阻断原因；若引用已有实体，使用上下文中原样出现的名称并填写 `entity_labels`，不要编造实体。`goal_proposals`、`decision_criteria` 和 `expected_output_shape` 必须说明本窗口如何承接当前状态并向前推进。
@@ -17,6 +22,8 @@
     也不得写自然语言描述（例如 `"setup: 确认残星纹 (setup_window: 1-30)"` 会被宿主拒绝并阻断）；
   - `action`：只允许 `SETUP`、`PROGRESS`、`PAYOFF`、`DEFER` 之一；
   - `expected_delta`：本章对这一义务造成的可观察变化，必须是非空字符串。
+- 不要把“本卷仍然有效”的全部长期义务复制到每一章。`obligation_actions` 只列本章确实执行
+  SETUP/PROGRESS/PAYOFF/DEFER 的动作；宿主会依据已接纳计划节点的章节范围计算本章应携带的长期责任。
 - 本层级**不得**声明新的长期义务：`obligation_declarations`、`obligation`、`obligations`、
   `key_obligations` 与旧版 `obligation_plan` 责任表在本层级一律被宿主拒绝。需要新增长期义务时，
   只能由上层（STORY / ARC_VOLUME）声明，本层级通过 `obligation_actions` 引用。
@@ -26,7 +33,10 @@
   - `requirement`: `"REQUIRED"` 或 `"NOT_REQUIRED"`；
   - `REQUIRED` 时必须给出 1—3 个 `needs`，每个 need 的 `kind` 只允许
     `causal_history`、`knowledge_origin`、`relationship_origin`、`setup_evidence`、`object_origin`，
-    且 `query` 非空、必要时绑定 `entity_ids` 与 `predicates`；
+    且 `query` 非空、必要时绑定 `entity_ids` 与 `predicates`；`entity_ids` 只能使用 canonical
+    World entity ID，不得使用 `planner-context.unit.anchor.*` 展示句柄；每个 need 必须填写
+    `source_chapter_end`，其值严格小于目标章，只能检索在该截止章前可能已提交的历史证据，
+    不得把本章或未来章尚待创作的事件写成检索问题；
   - `NOT_REQUIRED` 必须给出枚举化 `reason_code`
     （`no_historical_dependency` 或 `review_waiver`）与 `waiver_ref`，且不得携带 needs；
   - 第 1 章可以省略（host 以 `first_chapter` waiver 处理）。

@@ -25,6 +25,7 @@ import pytest
 from novel_agent.adapters.filesystem import FilesystemObjectStore
 from novel_agent.agents.plan_reviewer import (
     PlanReviewerAgent,
+    PlanReviewerInvocationError,
     apply_host_plan_review_constraints,
     obligation_stage_windows,
 )
@@ -47,6 +48,7 @@ from novel_agent.domain.planning import (
     ReviewTargetKind,
 )
 from novel_agent.domain.stage2 import AgentMode, AgentType
+from novel_agent.domain.world import Entity
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import content_id, world_root_content_id
 
@@ -96,6 +98,13 @@ def _world(obligations: tuple[PlanObligation, ...]) -> WorldRootDocument:
         root_hash=HASH,
         schema_version=VERSION,
         source_commit=COMMIT,
+        entities=(
+            Entity(
+                entity_id=StableId("entity.hero"),
+                entity_type="character",
+                internal_label="hero",
+            ),
+        ),
         obligations=obligations,
     )
     derived = world_root_content_id(seed)
@@ -103,6 +112,7 @@ def _world(obligations: tuple[PlanObligation, ...]) -> WorldRootDocument:
         root_hash=derived,
         schema_version=VERSION,
         source_commit=COMMIT,
+        entities=seed.entities,
         obligations=obligations,
     )
     assert world_root_content_id(declared) == derived
@@ -166,7 +176,13 @@ def _volume(
     """
 
     early = ("opening_state", "trigger_event", "first_escalation", "first_cost")
-    late = ("second_escalation", "climax_cost", "ending_state", "next_volume_hook")
+    late = (
+        "second_escalation",
+        "volume_climax",
+        "climax_cost",
+        "ending_state",
+        "next_volume_hook",
+    )
     narrative = {key: _stage(f"{key} 描述", f"{start}-{start + 5}", "setup") for key in early}
     narrative.update({key: _stage(f"{key} 描述", f"{end - 5}-{end}", "setup") for key in late})
     narrative[stage_key] = {**entry, "window": stage_window}
@@ -186,6 +202,7 @@ def _volume(
             {
                 "kind": "objective",
                 "summary": "本卷推进的责任",
+                "owner_ids": ["entity.hero"],
                 "setup_window": f"{start}-{start + 20}",
                 "progress_windows": [f"{start + 21}-{end - 11}"],
                 "payoff_window": f"{end - 10}-{end}",
@@ -207,13 +224,14 @@ def _payload_at(
 ) -> str:
     """One volume holding a stage at ``window``.
 
-    The volume bounds default to the window's own decade so the window is always
-    inside its volume; a test that specifically wants a window outside the volume
-    scope passes bounds of its own.
+    The volume bounds default to a valid single-volume plan from chapter 1 through
+    the stage window's end.  The stage window remains explicit so the test can
+    isolate the accepted obligation boundary without introducing unrelated shape
+    defects.
     """
 
-    first, last = (int(part) for part in window.split("-"))
-    start = first if start is None else start
+    _, last = (int(part) for part in window.split("-"))
+    start = 1 if start is None else start
     end = last if end is None else end
     entry = _stage(description, window, role, serves)
     return json.dumps(
@@ -321,18 +339,23 @@ def _run_review(
         repo,
         accepted_world_ref=None if omit_world_from_sources else world_ref,
     )
-    review, _ref, _call = asyncio.run(
-        agent.review(
-            version=VERSION,
-            mode=AgentMode.ARC_VOLUME,
-            target_kind=ReviewTargetKind.PLAN_PROPOSAL,
-            target_payload=payload,
-            target_artifact=target,
-            trusted_source_artifacts=() if omit_world_from_sources else (world_ref,),
-            request=cast(ModelRequest, object()),
-            base_commit=COMMIT,
+    try:
+        review, _ref, _call = asyncio.run(
+            agent.review(
+                version=VERSION,
+                mode=AgentMode.ARC_VOLUME,
+                target_kind=ReviewTargetKind.PLAN_PROPOSAL,
+                target_payload=payload,
+                target_artifact=target,
+                trusted_source_artifacts=() if omit_world_from_sources else (world_ref,),
+                request=cast(ModelRequest, object()),
+                base_commit=COMMIT,
+            )
         )
-    )
+    except PlanReviewerInvocationError as error:
+        if not error.mechanical_preflight or error.review_draft_ref is None:
+            raise
+        return PlanReviewDraft.model_validate_json(repo.read_verified(error.review_draft_ref))
     return PlanReviewDraft(
         target_kind=review.target_kind,
         decision=review.decision,

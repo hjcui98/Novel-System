@@ -6,6 +6,8 @@ can consume them without a circular import.
 
 from __future__ import annotations
 
+import re
+from difflib import SequenceMatcher
 from enum import StrEnum
 
 from pydantic import Field, model_validator
@@ -49,6 +51,26 @@ _HISTORY_RETRIEVAL_NEED_KINDS = frozenset(
 # canonical text.  Any other NOT_REQUIRED decision needs a real approval receipt.
 FIRST_CHAPTER_WAIVER_REF = "waiver.history.first_chapter"
 HOST_ISSUED_WAIVER_REFS = frozenset({FIRST_CHAPTER_WAIVER_REF})
+_TARGET_EVENT_QUESTION = re.compile(r"如何|怎样|怎么|何时|是否会|将如何|具体触发")
+_NON_WORD = re.compile(r"[^0-9A-Za-z\u4e00-\u9fff]+")
+
+
+def history_need_targets_same_chapter(query: str, target_texts: tuple[str, ...]) -> bool:
+    """Detect a Need that asks Memory to narrate its own not-yet-written target event."""
+
+    if _TARGET_EVENT_QUESTION.search(query) is None:
+        return False
+    normalized_query = _NON_WORD.sub("", query)
+    for text in target_texts:
+        normalized_target = _NON_WORD.sub("", text)
+        if not normalized_target:
+            continue
+        match = SequenceMatcher(
+            None, normalized_query, normalized_target, autojunk=False
+        ).find_longest_match()
+        if match.size >= 6:
+            return True
+    return False
 
 
 class HistoryRetrievalNeed(DomainModel):
@@ -59,6 +81,7 @@ class HistoryRetrievalNeed(DomainModel):
     entity_ids: tuple[StableId, ...] = ()
     predicates: tuple[str, ...] = ()
     why_needed: str | None = None
+    source_chapter_end: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_kind(self) -> HistoryRetrievalNeed:

@@ -101,7 +101,11 @@ _EDITOR_CONTRACT_RETRY_INSTRUCTION = (
     "an exact contiguous evidence_quote from the supplied Draft for every blocking issue; "
     "do not invent or paraphrase a quote. If a blocking issue has no exact Draft location, "
     "use MAJOR_REWRITE with non-empty rewrite_targets instead. Keep unresolved_needs "
-    "advisory and never use them as a substitute for the required fields."
+    "advisory and never use them as a substitute for the required fields. A contradiction, "
+    "cross-chapter event, unsupported state change, invented character, backstory, item, or "
+    "mechanism, and any internal inconsistency is an issue, not an unresolved_need. PASS is "
+    "invalid while any such defect remains, even when the Draft leaves it unexplained or calls "
+    "it a future question."
 )
 _EDITOR_NO_CHANGE_RETRY_SUFFIX = ".no-change-retry1"
 _EDITOR_NO_CHANGE_RETRY_FIELD = "host_no_change_retry"
@@ -127,6 +131,13 @@ _EDITOR_REPAIR_BOUNDARY_INSTRUCTION = (
     "span: replacement_text may be longer or shorter than the supplied span, including an "
     "inserted sentence or paragraph. The returned repaired_text must contain the actual "
     "replacement; self_observations do not count as a repair."
+)
+_EDITOR_BOUNDARY_RETRY_FIELD = "host_out_of_scope_retry"
+_EDITOR_BOUNDARY_RETRY_REPETITION_PENALTY = 1.10
+_EDITOR_BOUNDARY_RETRY_INSTRUCTION = (
+    "The previous LOCAL_REPAIR candidate changed characters outside every frozen allowed span. "
+    "Discard that candidate. Return the complete Draft with every character before and after "
+    "each allowed span byte-for-byte unchanged; replace only the supplied repair_scope_text."
 )
 
 
@@ -302,7 +313,7 @@ class EditorialService:
         payload = _repair_payload(review_input, report, original, blocks)
         current_request = request
         current_payload: Mapping[str, object] = payload
-        for attempt in range(2):
+        for attempt in range(3):
             try:
                 run = await self._editor.local_repair(
                     current_request,
@@ -316,19 +327,48 @@ class EditorialService:
                     "Editor LOCAL_REPAIR failed without a candidate"
                 ) from error
 
-            repaired_text = run.output.repaired_text
+            proposed_text = run.output.repaired_text
+            proposed_spans = _changed_spans(
+                review_input.draft.draft_id,
+                original,
+                proposed_text,
+            )
+            repaired_text = _project_repair_to_allowed_spans(
+                original,
+                proposed_text,
+                scope.allowed_spans,
+            )
             changed_spans = _changed_spans(review_input.draft.draft_id, original, repaired_text)
-            if changed_spans:
+            if (
+                changed_spans
+                and all(_span_inside(span, scope.allowed_spans) for span in changed_spans)
+                and _all_required_spans_changed(changed_spans, scope.allowed_spans)
+            ):
                 break
-            if attempt == 0:
-                current_request = _editor_no_change_retry_request(request)
-                current_payload = _editor_no_change_retry_payload(payload)
+            if not changed_spans:
+                if proposed_spans and attempt < 2:
+                    current_request = _editor_boundary_retry_request(request, attempt + 1)
+                    current_payload = _editor_boundary_retry_payload(payload)
+                    continue
+                if not proposed_spans and attempt == 0:
+                    current_request = _editor_no_change_retry_request(request)
+                    current_payload = _editor_no_change_retry_payload(payload)
+                    continue
+                if proposed_spans:
+                    raise EditorialRepairError("LOCAL_REPAIR changed text outside its frozen scope")
+                raise EditorialRepairError("LOCAL_REPAIR produced no text change")
+            if attempt < 2:
+                current_request = _editor_boundary_retry_request(request, attempt + 1)
+                current_payload = _editor_boundary_retry_payload(
+                    payload,
+                    require_complete=True,
+                )
                 continue
-            raise EditorialRepairError("LOCAL_REPAIR produced no text change")
+            raise EditorialRepairError(
+                "LOCAL_REPAIR did not safely change every frozen issue span"
+            )
         else:  # pragma: no cover - the bounded loop always returns or raises above
             raise AssertionError("Editor LOCAL_REPAIR retry loop did not terminate")
-        if any(not _span_inside(span, scope.allowed_spans) for span in changed_spans):
-            raise EditorialRepairError("LOCAL_REPAIR changed text outside its frozen scope")
         try:
             text_artifact = self._artifacts.put(
                 repaired_text.encode("utf-8"),
@@ -555,6 +595,35 @@ def _editor_no_change_retry_payload(
     }
 
 
+def _editor_boundary_retry_request(request: ModelRequest, attempt: int) -> ModelRequest:
+    suffix = f".boundary-retry{attempt}"
+    request_id = request.request_id.root[: 128 - len(suffix)] + suffix
+    return request.model_copy(
+        update={
+            "request_id": StableId(request_id),
+            "repetition_penalty": _EDITOR_BOUNDARY_RETRY_REPETITION_PENALTY,
+        }
+    )
+
+
+def _editor_boundary_retry_payload(
+    payload: Mapping[str, object],
+    *,
+    require_complete: bool = False,
+) -> Mapping[str, object]:
+    retry: dict[str, object] = {
+        **payload,
+        _EDITOR_BOUNDARY_RETRY_FIELD: _EDITOR_BOUNDARY_RETRY_INSTRUCTION,
+    }
+    if require_complete:
+        retry[_EDITOR_REPAIR_COMPLETENESS_FIELD] = (
+            _EDITOR_REPAIR_COMPLETENESS_INSTRUCTION
+            + " The previous candidate left at least one allowed issue span unchanged; "
+            "this retry must make an actual repair inside every listed allowed span."
+        )
+    return retry
+
+
 def _repair_payload(
     review_input: EditorialReviewInput,
     report: EditorialReport,
@@ -756,6 +825,27 @@ def _changed_spans(draft_id: ArtifactId, original: str, repaired: str) -> tuple[
     return tuple(merged)
 
 
+def _project_repair_to_allowed_spans(
+    original: str,
+    proposed: str,
+    allowed_spans: Iterable[DraftSpan],
+) -> str:
+    """Apply only model-proposed edits wholly contained by a frozen repair span."""
+
+    allowed = tuple(allowed_spans)
+    matcher = difflib.SequenceMatcher(a=original, b=proposed, autojunk=False)
+    replacements: list[tuple[int, int, str]] = []
+    for tag, start, end, new_start, new_end in matcher.get_opcodes():
+        if tag == "equal":
+            continue
+        if any(span.start <= start <= end <= span.end for span in allowed):
+            replacements.append((start, end, proposed[new_start:new_end]))
+    projected = original
+    for start, end, replacement in reversed(replacements):
+        projected = projected[:start] + replacement + projected[end:]
+    return projected
+
+
 def _block_at(blocks: tuple[_DraftBlock, ...], offset: int) -> _DraftBlock | None:
     return next((block for block in blocks if block.start <= offset <= block.end), None)
 
@@ -763,6 +853,26 @@ def _block_at(blocks: tuple[_DraftBlock, ...], offset: int) -> _DraftBlock | Non
 def _span_inside(span: DraftSpan, allowed: Iterable[DraftSpan]) -> bool:
     return any(
         allowed_span.start <= span.start <= span.end <= allowed_span.end for allowed_span in allowed
+    )
+
+
+def _all_required_spans_changed(
+    changed: Iterable[DraftSpan],
+    allowed: Iterable[DraftSpan],
+) -> bool:
+    """Require observable repair work for every independently reviewed issue span."""
+
+    changed_spans = tuple(changed)
+    return all(
+        any(
+            (
+                change.start <= target.start <= change.end
+                if target.start == target.end
+                else change.start < target.end and target.start < change.end
+            )
+            for change in changed_spans
+        )
+        for target in allowed
     )
 
 

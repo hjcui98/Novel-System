@@ -68,6 +68,7 @@ from novel_agent.services.planning_context_loop import (
 )
 
 PLAN_PROPOSAL_MEDIA_TYPE = "application/vnd.novel-agent.plan-proposal+json"
+PLAN_REVIEW_DRAFT_MEDIA_TYPE = "application/vnd.novel-agent.plan-review-draft+json"
 
 # Runtime task inputs are a lineage envelope, not an assertion that every
 # referenced artifact is author intent.  In particular, an operator rejection
@@ -287,7 +288,14 @@ class ProductionStage4InvocationFactory:
             project_id=request.project_id,
             task=planning_task,
             author_intent_artifacts=author_intent,
-            revision_artifact_refs=revision_artifacts,
+            revision_artifact_refs=(
+                *revision_artifacts,
+                *(
+                    ref
+                    for ref in request.continuation_artifact_refs
+                    if ref.media_type == PLAN_REVIEW_DRAFT_MEDIA_TYPE
+                ),
+            ),
             revision_parent_proposal_ref=(
                 revision_parent_refs[0] if revision_parent_refs else None
             ),
@@ -457,9 +465,10 @@ class Stage4PlanningLeafAdapter:
         ):
             raise ValueError("Stage 4 request factory violated the durable task basis")
         bound_inputs = set(request.input_artifact_refs)
+        bound_continuation = set(request.continuation_artifact_refs)
         if not set(detailed.author_intent_artifacts).issubset(bound_inputs):
             raise ValueError("Stage 4 request introduced an unbound author-intent artifact")
-        if not set(detailed.revision_artifact_refs).issubset(bound_inputs):
+        if not set(detailed.revision_artifact_refs).issubset(bound_inputs | bound_continuation):
             raise ValueError("Stage 4 request introduced an unbound revision artifact")
         if (
             detailed.revision_parent_proposal_ref is not None
@@ -569,7 +578,9 @@ class Stage4PlanningLeafAdapter:
             status=status,
             artifact_refs=artifact_refs,
             failure_code=diagnostic[:128],
-            failure_detail=f"Stage 4 terminal: {result.terminal.value}"[:512],
+            failure_detail=(
+                f"Stage 4 terminal: {result.terminal.value}; " + "; ".join(result.diagnostic_codes)
+            )[:512],
         )
 
     def _memory_gap_finding(

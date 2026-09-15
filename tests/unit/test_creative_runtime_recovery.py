@@ -15,6 +15,7 @@ from novel_agent.domain.agent_context import LoopRoundProgress, LoopRoundProgres
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.changes import CommitResult, CommitStatus
 from novel_agent.domain.creative_runtime import (
+    DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE,
     AcceptanceCommand,
     AcceptanceDecision,
     ActorKind,
@@ -49,7 +50,7 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
-from novel_agent.domain.writing_loop import WritingLoopTerminalStatus
+from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.ports.creative_runtime import (
     CandidateMaterializationError,
     DraftLengthContractError,
@@ -147,6 +148,151 @@ def test_recover_boundary_repairs_post_draft_projection() -> None:
     expected = Mock()
     cast(Any, service)._repair_post_draft_projection = Mock(return_value=expected)
     assert service.recover_boundary(projection.task_id) is expected
+
+
+def test_recover_boundary_creates_one_bounded_editorial_retry(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result_ref = _ref("2").model_copy(
+        update={"media_type": "application/vnd.novel-agent.writing-loop-result+json"}
+    )
+    final_text = _ref("3").model_copy(update={"media_type": "text/plain; charset=utf-8"})
+    upstream = TaskId("task.recovery.upstream")
+    blocked = _task(
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.BLOCKED,
+        block_cause=FailureClass.LEAF_REVIEW_REQUIRED.value,
+        chapter_index=1,
+        writer_generation=6,
+        dependency_task_ids=(upstream,),
+        terminal_artifact_refs=(result_ref,),
+    )
+    report = SimpleNamespace(
+        report_id=StableId("editorial-report.retry"),
+        issues=(SimpleNamespace(description="Remove the remaining POV violations."),),
+    )
+    writing_result = SimpleNamespace(
+        status=WritingLoopTerminalStatus.REVIEW_REQUIRED_LOCAL_REPAIR_EXHAUSTED,
+        final_text_artifact=final_text,
+        editorial_reports=(report,),
+        failure_detail="independent review still failed",
+    )
+    monkeypatch.setattr(
+        WritingLoopResult,
+        "model_validate_json",
+        classmethod(lambda cls, value: writing_result),
+    )
+    directive_ref = _ref("4").model_copy(
+        update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE}
+    )
+    artifacts = Mock()
+    artifacts.read_verified.return_value = b"{}"
+    artifacts.put.return_value = directive_ref
+    commands = Mock()
+    commands.get_task.return_value = blocked
+    commands.create_task.side_effect = lambda task: task
+    service = _service(commands=commands, artifacts=artifacts)
+
+    result = service.recover_boundary(blocked.task_id)
+
+    assert result is not None
+    assert result.reason_code == "automatic_editorial_retry_ready"
+    revised = commands.create_task.call_args.args[0]
+    assert revised.task_id == TaskId("run.recovery.draft.1.g7")
+    assert revised.writer_generation == 7
+    assert revised.dependency_task_ids == (upstream,)
+    assert revised.input_artifact_refs == (final_text, directive_ref)
+    commands.supersede_task.assert_called_once_with(
+        blocked.task_id,
+        reason="superseded by one bounded automatic editorial retry",
+    )
+
+
+def test_recover_boundary_repairs_legacy_false_ready_editorial_retry() -> None:
+    directive_ref = _ref("4").model_copy(
+        update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE}
+    )
+    upstream = TaskId("task.recovery.upstream")
+    rejected = _task(
+        task_id=TaskId("task.recovery.draft.1.g6"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.CANCELLED,
+        superseded=True,
+        dependency_task_ids=(upstream,),
+    )
+    retry = _task(
+        task_id=TaskId("task.recovery.draft.1.g7"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.READY,
+        dependency_task_ids=(rejected.task_id,),
+        input_artifact_refs=(directive_ref,),
+    )
+    repaired = retry.model_copy(update={"dependency_task_ids": (upstream,)})
+    commands = Mock()
+    commands.get_task.side_effect = lambda task_id: retry if task_id == retry.task_id else rejected
+    commands.repair_unclaimed_draft_dependencies.return_value = repaired
+    artifacts = Mock()
+    artifacts.read_verified.return_value = b'{"recovery_kind":"automatic_editorial_retry"}'
+    service = _service(commands=commands, artifacts=artifacts)
+
+    result = service.recover_boundary(retry.task_id)
+
+    assert result is not None
+    assert result.reason_code == "automatic_editorial_retry_dependencies_repaired"
+    commands.repair_unclaimed_draft_dependencies.assert_called_once_with(
+        retry.task_id,
+        dependency_task_ids=(upstream,),
+    )
+
+
+def test_recover_boundary_moves_legacy_length_failure_to_fresh_generation(
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    result_ref = _ref("5").model_copy(
+        update={"media_type": "application/vnd.novel-agent.writing-loop-result+json"}
+    )
+    upstream = TaskId("task.recovery.upstream")
+    waiting = _task(
+        task_id=TaskId("run.recovery.draft.1.g7"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        status=TaskStatus.WAITING_RETRY,
+        chapter_index=1,
+        writer_generation=7,
+        dependency_task_ids=(upstream,),
+        terminal_artifact_refs=(result_ref,),
+    )
+    writing_result = SimpleNamespace(
+        status=WritingLoopTerminalStatus.WRITER_FAILED,
+        failure_detail="length repair exhausted its bounded continuation rounds (1760 < 3000)",
+    )
+    monkeypatch.setattr(
+        WritingLoopResult,
+        "model_validate_json",
+        classmethod(lambda cls, value: writing_result),
+    )
+    directive_ref = _ref("6").model_copy(
+        update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE}
+    )
+    artifacts = Mock()
+    artifacts.put.return_value = directive_ref
+    commands = Mock()
+    commands.get_task.return_value = waiting
+    commands.create_task.side_effect = lambda task: task
+    service = _service(commands=commands, artifacts=artifacts)
+
+    result = service.recover_boundary(waiting.task_id)
+
+    assert result is not None
+    assert result.reason_code == "automatic_length_contract_retry_ready"
+    revised = commands.create_task.call_args.args[0]
+    assert revised.task_id == TaskId("run.recovery.draft.1.g8")
+    assert revised.writer_generation == 8
+    assert revised.dependency_task_ids == (upstream,)
+    assert revised.input_artifact_refs == (directive_ref,)
+    commands.supersede_task.assert_called_once_with(
+        waiting.task_id,
+        reason="superseded by one length-contract schema recovery",
+    )
 
 
 def test_recover_boundary_auto_extends_planner_budget_review() -> None:
@@ -465,6 +611,27 @@ def test_plan_acceptance_keeps_original_planning_inputs_for_revision_successor()
     acceptance = service._acceptance_task(previous, candidate)
 
     assert acceptance.input_artifact_refs == (author_ref, candidate_ref)
+
+
+def test_downstream_planning_drops_consumed_revision_lineage_inputs() -> None:
+    reader = Mock()
+    author_ref = _ref("a").model_copy(update={"media_type": "text/plain"})
+    revision_refs = (
+        _ref("b").model_copy(
+            update={"media_type": "application/vnd.novel-agent.operator-revision-directive+json"}
+        ),
+        _ref("c").model_copy(
+            update={"media_type": "application/vnd.novel-agent.plan-proposal+json"}
+        ),
+        _ref("d").model_copy(
+            update={"media_type": "application/vnd.novel-agent.operator-plan-review+json"}
+        ),
+    )
+    initial = _task(input_artifact_refs=(author_ref, *revision_refs))
+    reader.list_run.return_value = (initial,)
+    service = _service(task_reader=reader)
+
+    assert service._planning_inputs(_task()) == (author_ref,)
 
 
 def test_submit_acceptance_rejects_unpromoted_lookahead() -> None:
@@ -1334,7 +1501,7 @@ def test_advance_binds_writer_request_to_claimed_attempt() -> None:
     commands.claim.return_value = (attempt, fence)
     commands.settle_attempt.return_value = _task(
         kind=TaskKind.DRAFT_CANDIDATE,
-        status=TaskStatus.WAITING_RETRY,
+        status=TaskStatus.BLOCKED,
     )
     writer = Mock()
     writer.run = AsyncMock(
@@ -1361,7 +1528,7 @@ def test_advance_binds_writer_request_to_claimed_attempt() -> None:
 
     result = asyncio.run(service.advance(TaskId("task.recovery"), worker_id="writer"))
 
-    assert result.terminal is CreativeRunTerminal.WAITING_RETRY
+    assert result.terminal is CreativeRunTerminal.REVIEW_REQUIRED
     claimed_task = request_factory.call_args.args[0]
     assert claimed_task.current_attempt_id == attempt.attempt_id
     assert claimed_task.task_revision == fence.task_revision

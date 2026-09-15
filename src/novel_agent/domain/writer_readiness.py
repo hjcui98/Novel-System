@@ -12,9 +12,10 @@ from novel_agent.domain.benchmark import (
 )
 from novel_agent.domain.generation import WritingTaskContract
 from novel_agent.domain.memory import (
+    ObligationStatus,
     WorldRootDocument,
-    obligation_in_scope_for_chapter,
 )
+from novel_agent.domain.plan_obligation_scope import scoped_plan_obligation_ids
 from novel_agent.domain.retrieval_decision import (
     FIRST_CHAPTER_WAIVER_REF,
     HistoryRetrievalRequirement,
@@ -33,6 +34,7 @@ class WriterReadinessReasonCode(StrEnum):
     MEMORY_GATEWAY_NOT_EXECUTED = "MEMORY_GATEWAY_NOT_EXECUTED"
     MANDATORY_FACET_INCOMPLETE = "MANDATORY_FACET_INCOMPLETE"
     OBLIGATION_BINDING_INCOMPLETE = "OBLIGATION_BINDING_INCOMPLETE"
+    OBLIGATION_OWNER_MISSING = "OBLIGATION_OWNER_MISSING"
     PLANNING_LINEAGE_INCOMPLETE = "PLANNING_LINEAGE_INCOMPLETE"
     PROJECTION_NOT_EXACT = "PROJECTION_NOT_EXACT"
     WRITER_PACKAGE_NOT_READY = "WRITER_PACKAGE_NOT_READY"
@@ -188,17 +190,32 @@ def evaluate_writer_readiness(
                 f"goal {goal.goal_id.root} decision does not match the Writer Context package"
             )
 
-    due_obligations = {
-        obligation.obligation_id
-        for obligation in world.obligations
-        if obligation_in_scope_for_chapter(obligation, target_chapter)
-    }
+    due_obligations = set(
+        scoped_plan_obligation_ids(
+            plan=plan,
+            world=world,
+            chapter_index=target_chapter,
+        )
+    )
     missing_obligations = due_obligations - set(writing_task.active_plan_obligations)
     if missing_obligations:
         codes.append(WriterReadinessReasonCode.OBLIGATION_BINDING_INCOMPLETE)
         details.append(
             "unbound due obligations: "
             + ", ".join(sorted(item.root for item in missing_obligations))
+        )
+    ownerless_obligations = {
+        obligation.obligation_id
+        for obligation in world.obligations
+        if obligation.obligation_id in due_obligations
+        and obligation.status not in {ObligationStatus.RESOLVED, ObligationStatus.ABANDONED}
+        and not obligation.owner_ids
+    }
+    if ownerless_obligations:
+        codes.append(WriterReadinessReasonCode.OBLIGATION_OWNER_MISSING)
+        details.append(
+            "ownerless scoped obligations: "
+            + ", ".join(sorted(item.root for item in ownerless_obligations))
         )
 
     if isinstance(package, WriterContextPackageV2):

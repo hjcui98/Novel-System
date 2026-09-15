@@ -151,6 +151,49 @@ def test_supersede_rejects_empty_reason_running_work_and_is_idempotent(
         commands.supersede_task(running.task_id, reason="too late")
 
 
+def test_repair_unclaimed_draft_dependencies_replaces_only_satisfied_edge(
+    kernel: tuple[sessionmaker[Session], RuntimeCommandService, CommitId],
+) -> None:
+    _, commands, base = kernel
+    initial = commands.create_run_and_initial_task(_request("run.dependency-repair", base))
+    upstream = initial.model_copy(
+        update={
+            "task_id": TaskId("task.dependency-repair.upstream"),
+            "kind": TaskKind.DRAFT_CANDIDATE,
+            "status": TaskStatus.SUCCEEDED,
+        }
+    )
+    commands.create_task(upstream)
+    rejected = upstream.model_copy(
+        update={
+            "task_id": TaskId("task.dependency-repair.rejected"),
+            "status": TaskStatus.CANCELLED,
+            "dependency_task_ids": (upstream.task_id,),
+            "superseded": True,
+        }
+    )
+    commands.create_task(rejected)
+    retry = rejected.model_copy(
+        update={
+            "task_id": TaskId("task.dependency-repair.retry"),
+            "status": TaskStatus.READY,
+            "dependency_task_ids": (rejected.task_id,),
+            "superseded": False,
+        }
+    )
+    commands.create_task(retry)
+
+    repaired = commands.repair_unclaimed_draft_dependencies(
+        retry.task_id,
+        dependency_task_ids=(upstream.task_id,),
+    )
+
+    assert repaired.dependency_task_ids == (upstream.task_id,)
+    assert commands.get_task(retry.task_id) == repaired
+    attempt, _ = commands.claim(retry.task_id, worker_id="worker")
+    assert attempt.task_id == retry.task_id
+
+
 def test_heartbeat_rejects_a_settled_attempt(
     kernel: tuple[sessionmaker[Session], RuntimeCommandService, CommitId],
 ) -> None:

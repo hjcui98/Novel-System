@@ -20,6 +20,7 @@ from novel_agent.domain.stage2 import AgentMode
 
 _VOLUME_ONE = {
     "kind": "objective",
+    "owner_ids": ["entity.hero"],
     "not_before_chapter": 1,
     "payoff_window": "90-100",
     "progress_windows": ["51-80"],
@@ -163,6 +164,29 @@ def test_readable_legacy_responsibility_table_survives_review() -> None:
     )
 
     assert not any(issue.kind is ReviewIssueKind.OBLIGATION_CONTRACT for issue in review.issues)
+
+
+def test_upper_level_obligation_without_owner_is_rejected_before_acceptance() -> None:
+    ownerless = dict(_VOLUME_ONE)
+    ownerless.pop("owner_ids")
+    review = _review(
+        _payload(
+            {
+                "item_id": "vol_01",
+                "kind": "arc_volume",
+                "payload": {
+                    "plan_level": "arc_volume",
+                    "chapter_start": 1,
+                    "chapter_end": 100,
+                    "obligation_plan": [ownerless],
+                },
+            }
+        ),
+        mode="arc_volume",
+    )
+
+    assert review.decision is ReviewDecision.REVISE
+    assert any("OBLIGATION_OWNER_MISSING" in issue.summary for issue in review.issues)
 
 
 def test_malformed_declaration_list_is_revise() -> None:

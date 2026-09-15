@@ -341,6 +341,95 @@ def test_vertical_runner_ignores_cancelled_or_superseded_background_work() -> No
     assert report.dispatch_slices == 0
 
 
+def test_vertical_runner_dispatches_replacement_after_rejected_acceptance() -> None:
+    state: dict[str, tuple[TaskRecord, ...]] = {
+        "tasks": (
+            TaskRecord(
+                task_id=TaskId("task.vertical.rejected.acceptance"),
+                run_id=RunId("run.vertical"),
+                project_id=ProjectId("project.vertical"),
+                kind=TaskKind.DRAFT_ACCEPTANCE,
+                task_revision=1,
+                status=TaskStatus.CANCELLED,
+                basis_commit=BASE,
+                policy_hash=HASH,
+                permission_hash=HASH,
+                chapter_index=21,
+                target_chapters=21,
+            ),
+            _ready_task("task.vertical.replacement"),
+        )
+    }
+
+    class _Runtime:
+        def start(self, request: CreativeRunRequest) -> CreativeRunResult:
+            raise AssertionError("an existing run must not be started again")
+
+    class _Dispatcher:
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
+            assert max_tasks == 1
+            state["tasks"] = (state["tasks"][0],)
+            return (_result(CreativeRunTerminal.PROGRESSED, FINAL),)
+
+    class _Tasks:
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
+            assert run_id == RunId("run.vertical")
+            return state["tasks"]
+
+    report = asyncio.run(
+        VerticalCreativeRunner(
+            runtime=cast(CreativeRuntimeService, _Runtime()),
+            dispatcher=cast(CreativeDispatcher, _Dispatcher()),
+            tasks=cast(RuntimeTaskReader, _Tasks()),
+        ).run(_request(), max_tasks=1, max_slices=1)
+    )
+
+    assert report.status is VerticalRunStatus.WAITING
+    assert report.dispatch_slices == 1
+    assert report.runtime_results[-1].terminal is CreativeRunTerminal.PROGRESSED
+
+
+def test_vertical_runner_repairs_legacy_ready_boundary_before_dispatch() -> None:
+    state: dict[str, object] = {
+        "tasks": (_ready_task("task.vertical.legacy-retry"),),
+        "repaired": False,
+    }
+
+    class _Runtime:
+        def start(self, request: CreativeRunRequest) -> CreativeRunResult:
+            raise AssertionError("an existing run must not be started again")
+
+        def recover_boundary(self, task_id: TaskId) -> CreativeRunResult | None:
+            assert task_id == TaskId("task.vertical.legacy-retry")
+            if state["repaired"]:
+                return None
+            state["repaired"] = True
+            return _result(CreativeRunTerminal.PROGRESSED, BASE)
+
+    class _Dispatcher:
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
+            assert state["repaired"] is True
+            assert max_tasks == 1
+            state["tasks"] = ()
+            return (_result(CreativeRunTerminal.PROGRESSED, FINAL),)
+
+    class _Tasks:
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
+            assert run_id == RunId("run.vertical")
+            return cast(tuple[TaskRecord, ...], state["tasks"])
+
+    report = asyncio.run(
+        VerticalCreativeRunner(
+            runtime=cast(CreativeRuntimeService, _Runtime()),
+            dispatcher=cast(CreativeDispatcher, _Dispatcher()),
+            tasks=cast(RuntimeTaskReader, _Tasks()),
+        ).run(_request(), max_tasks=1, max_slices=1)
+    )
+
+    assert report.dispatch_slices == 1
+    assert [result.current_commit for result in report.runtime_results] == [BASE, FINAL]
+
+
 def test_vertical_runner_reports_foreground_crash_frontier_as_recovery_pending() -> None:
     class _Runtime:
         def start(self, request: CreativeRunRequest) -> CreativeRunResult:
@@ -396,8 +485,9 @@ def test_vertical_runner_repairs_auto_acceptance_before_polling_ready_work() -> 
         def start(self, request: CreativeRunRequest) -> CreativeRunResult:
             raise AssertionError("an existing run must not be started again")
 
-        def recover_boundary(self, task_id: TaskId) -> CreativeRunResult:
-            assert task_id == waiting.task_id
+        def recover_boundary(self, task_id: TaskId) -> CreativeRunResult | None:
+            if task_id != waiting.task_id:
+                return None
             self.calls += 1
             state["tasks"] = (_ready_task("task.vertical.after-auto"),)
             return _result(CreativeRunTerminal.PROGRESSED, BASE)

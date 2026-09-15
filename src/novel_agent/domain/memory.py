@@ -40,11 +40,23 @@ class TemporalObligationError(ValueError):
     """A future-locked obligation was used outside its trusted time window."""
 
 
+OBLIGATION_OWNER_SEMANTICS = (
+    "owner_ids identify the canonical narrative subjects whose state and progress must be "
+    "tracked to decide whether an obligation is set up, progressed, or paid off. A grantor, "
+    "teacher, information holder, location, or incidental participant is not an owner unless "
+    "that entity's own continuing state is part of the obligation. Multiple obligations may "
+    "correctly share the same owner."
+)
+
+
 class PlanObligation(DomainModel):
     obligation_id: StableId
     kind: ObligationKind
     description: str = Field(min_length=1)
     status: ObligationStatus
+    # Retrieval, task focus, and continuity all consume this field as the durable
+    # narrative-subject anchor.  Keep role diversity (grantor/holder/participant)
+    # in relations or events instead of overloading this identity.
     owner_ids: tuple[StableId, ...] = ()
     not_before_chapter: int | None = Field(default=None, ge=1)
     target_chapter_start: int | None = Field(default=None, ge=1)

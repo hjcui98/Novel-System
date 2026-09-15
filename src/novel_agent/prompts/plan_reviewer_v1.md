@@ -36,6 +36,8 @@ blocking issue 和其宿主授权的目标；不能省略、留空或只依赖 `
 
 在 PlanProposal 审校中，时间与父级范围关卡为强制检查项：
 
+- OBLIGATION_OWNER_SEMANTICS（责任归属语义）：`owner_ids` 是必须持续追踪其状态以判断责任设立、推进和兑现的叙事主体/检索锚点，不是奖励授予者、导师、信息持有者、地点或偶然参与者，除非该实体自身的持续状态就是责任的一部分。使用受信 `CONTROLLED_REVISION_EVIDENCE` 中的 ID—名称映射、World 状态和父 ARC 弧线上下文逐项核对。多条责任可以正确绑定同一主体；不得因为 owner 重复而要求改绑或制造角色多样性。
+
 - LONG_RANGE_PAYOFF_WITHOUT_TIME_WINDOW（长程伏笔回收缺少时间窗口）：PROMISE 或 FORESHADOWING 缺少 not_before_chapter。若必须由作者决定卷数或推进阶段，返回 HUMAN_REQUIRED；若仅缺少机械字段但窗口已有明确暗示，返回 REVISE。
 - EARLY_RESOLUTION_OF_FUTURE_LOCKED_OBLIGATION（过早解决未来锁定的剧情承诺）：在 not_before_chapter 之前出现 RESOLVE/PAYOFF。返回 REVISE；仅允许 SETUP/PROGRESS。
 - TARGET_WINDOW_OUTSIDE_PARENT_SCOPE（目标窗口超出父级范围）：子章节范围超出父级规划范围。返回 REVISE 或阻断。

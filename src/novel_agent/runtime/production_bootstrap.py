@@ -166,6 +166,7 @@ from novel_agent.services.retrieval import (
 )
 from novel_agent.services.runtime_acceptance import RuntimeAcceptanceService
 from novel_agent.services.runtime_commands import RuntimeCommandService
+from novel_agent.services.runtime_recovery import RuntimeRecoveryService
 from novel_agent.services.task_conditioned_need_generation import TaskPlanConditionedNeedGenerator
 from novel_agent.services.writer_candidate import WriterCandidateMaterializer
 from novel_agent.services.writer_change_reconciliation import WriterChangeReconciliationService
@@ -1889,6 +1890,14 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         project_id=context.project_id,
         run_id=context.run_id,
         parallelism=context.policy.runtime_parallelism,
+        recovery=RuntimeRecoveryService(
+            session_factory,
+            commands,
+            checkpoints,
+            artifacts,
+            commits,
+            None,
+        ),
     )
     prompt_pins, skill_pins = production_contract_pins(schema_version=schema_version)
     assembly = ProductionRuntimeAssembly(

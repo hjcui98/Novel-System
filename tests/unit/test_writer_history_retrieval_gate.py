@@ -208,7 +208,13 @@ def test_a2_required_decision_with_zero_needs_blocks_as_history_need_empty() -> 
         goal_payload={
             "history_retrieval": {
                 "requirement": "REQUIRED",
-                "needs": [{"kind": "causal_history", "query": "此前受伤状态"}],
+                "needs": [
+                    {
+                        "kind": "causal_history",
+                        "query": "此前受伤状态",
+                        "source_chapter_end": 20,
+                    }
+                ],
             }
         },
     )
@@ -277,6 +283,7 @@ def test_a3_required_retrieval_without_hits_never_claims_complete(tmp_path: Path
                         "kind": "causal_history",
                         "query": "此前受伤状态",
                         "entity_ids": [HERO.root],
+                        "source_chapter_end": 20,
                     }
                 ],
             }
@@ -374,6 +381,52 @@ def test_host_obligation_need_is_merged_even_with_not_required_decision() -> Non
     assert result.retrieval_requirement is HistoryRetrievalRequirement.REQUIRED
     assert result.needs
     assert result.needs[0].need_type == "setup_evidence"
+
+
+def test_first_chapter_waiver_wins_over_host_obligation_on_empty_canon() -> None:
+    from novel_agent.domain.memory import (
+        ObligationKind,
+        ObligationStatus,
+        PlanObligation,
+    )
+
+    invocation = _invocation_with(
+        _text(),
+        chapter=1,
+        goal_payload={
+            "history_retrieval": {
+                "requirement": "NOT_REQUIRED",
+                "reason_code": "first_chapter",
+                "waiver_ref": FIRST_CHAPTER_WAIVER_REF,
+            }
+        },
+    )
+    obligation = PlanObligation(
+        obligation_id=StableId("obligation.first.chapter"),
+        kind=ObligationKind.OBJECTIVE,
+        description="首章开始推进的目标",
+        status=ObligationStatus.OPEN,
+    )
+    goal = invocation.plan.chapter_goals[0].model_copy(
+        update={"obligation_ids": (obligation.obligation_id,)}
+    )
+    invocation = replace(
+        invocation,
+        plan=invocation.plan.model_copy(update={"chapter_goals": (goal,)}),
+        world=invocation.world.model_copy(update={"obligations": (obligation,)}),
+    )
+
+    result = TaskPlanConditionedNeedGenerator().generate_for_writing_task(
+        invocation.task,
+        invocation.writing_task,
+        invocation.world,
+        invocation.plan,
+        invocation.planning_context,
+    )
+
+    assert result.retrieval_requirement is HistoryRetrievalRequirement.NOT_REQUIRED
+    assert result.history_waiver_ref == FIRST_CHAPTER_WAIVER_REF
+    assert result.needs == ()
 
 
 def test_first_chapter_waiver_is_not_applicable_once_canonical_prose_exists(

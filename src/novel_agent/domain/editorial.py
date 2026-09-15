@@ -298,6 +298,34 @@ class EditorReviewPayload(DomainModel):
             if aligned != self.issues:
                 self = self.model_copy(update={"issues": aligned})
         if self.verdict is EditorialVerdict.PASS:
+            blocking_need_markers = (
+                "前后矛盾",
+                "自相矛盾",
+                "互相矛盾",
+                "稿件引入",
+                "当前稿件引入",
+                "新增细节",
+                "新增设定",
+                "未完全建立",
+                "未明确",
+                "当前作为",
+                "未定义",
+                "未定义机制",
+                "是否保留或移除",
+                "contradiction",
+                "contradictory",
+                "conflicts with",
+                "introduced by the draft",
+                "unsupported mechanism",
+            )
+            if any(
+                marker in need.lower()
+                for need in self.unresolved_needs
+                for marker in blocking_need_markers
+            ):
+                raise ValueError(
+                    "PASS cannot route a detected Draft defect through unresolved_needs"
+                )
             if (
                 self.repair_instructions
                 or self.preserve_requirements

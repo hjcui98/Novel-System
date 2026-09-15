@@ -145,6 +145,46 @@ def _plan() -> PlanRootDocument:
     )
 
 
+def test_writer_outline_hides_future_story_truth_nodes() -> None:
+    from novel_agent.domain.runtime import TaskId
+
+    plan = _plan()
+    safe_story = PlanNode(
+        plan_node_id=StableId("plan.story.premise"),
+        node_type="core_premise",
+        title="Safe premise",
+        summary="Visible opening premise.",
+        plan_level=PlanLevel.STORY,
+    )
+    hidden_story = PlanNode(
+        plan_node_id=StableId("plan.story.endgame"),
+        node_type="endgame_anchor",
+        title="Hidden endgame",
+        summary="Protected future identity.",
+        plan_level=PlanLevel.STORY,
+    )
+    plan = plan.model_copy(update={"nodes": (*plan.nodes, safe_story, hidden_story)})
+    task = TaskRecord(
+        task_id=TaskId("task.writer.story-filter"),
+        run_id=RunId("run.yinming"),
+        project_id=ProjectId("project.test"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        task_revision=0,
+        status=TaskStatus.READY,
+        basis_commit=COMMIT,
+        policy_hash="sha256:" + "1" * 64,
+        permission_hash="sha256:" + "1" * 64,
+        chapter_index=24,
+        target_chapters=28,
+    )
+
+    context = ProductionWritingRequestFactory._planning_context(task, plan, "write chapter 24")
+    titles = {node.title for node in context.visible_outline_nodes}
+
+    assert "Safe premise" in titles
+    assert "Hidden endgame" not in titles
+
+
 def test_chapter_set_projection_excludes_unrelated_story_root_nodes(tmp_path: Path) -> None:
     repo = _repo(tmp_path)
     brief_text = "完整作者 brief: 当前卷的作者权威约束与远期终局。"
@@ -244,10 +284,14 @@ def test_chapter_set_projection_excludes_unrelated_story_root_nodes(tmp_path: Pa
     rendered = package.rendered_context
     assert "全书核心冲突" in rendered
     assert "First volume local arc." in rendered
-    assert "Local investigation." in rendered
+    # A ChapterSet revision consumes only accepted STORY/ARC parents. The stale
+    # same-level ChapterSet it is replacing must not become mandatory context.
+    assert "Local investigation." not in rendered
     assert brief_text in rendered
-    assert "卷六真相" not in rendered
-    assert "第700章 payoff" not in rendered
+    # STORY authority remains available even when its range is outside this
+    # ChapterSet; only same/lower-level stale projections are excluded.
+    assert "卷六真相" in rendered
+    assert "第700章 payoff" in rendered
 
 
 def _payoff_item(chapter: int) -> ProposedItem:
@@ -601,6 +645,8 @@ def test_yinming_cannot_payoff_at_chapter_24(layer: str, tmp_path: Path) -> None
         assert "Volume 8 银铭终局" not in titles
         assert "Chapters 24-28" in titles
         assert "Volume 1" in titles
+        assert context.target_range == (24, 24)
+        assert {goal.chapter_index for goal in context.chapter_goals} == {24}
         return
 
     if layer == "plan_reviewer_host":

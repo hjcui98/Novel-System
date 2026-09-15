@@ -4,9 +4,9 @@ from __future__ import annotations
 
 import re
 from collections.abc import Callable, Mapping, Sequence
-from typing import TypeVar
+from typing import TypeVar, cast
 
-from pydantic import BaseModel
+from pydantic import BaseModel, JsonValue
 
 from novel_agent.agents.plan_reviewer import PlanReviewerAgent, PlanReviewerInvocationError
 from novel_agent.agents.planner import PlannerAgent, PlannerInvocationError
@@ -19,6 +19,8 @@ from novel_agent.domain.creative_runtime import (
 )
 from novel_agent.domain.ids import SchemaVersion, StableId, bounded_stable_id
 from novel_agent.domain.memory import (
+    OBLIGATION_OWNER_SEMANTICS,
+    ContextBudgetReport,
     FacetClosureStatus,
     RetrievalTrace,
     Stage1ContextPackage,
@@ -102,6 +104,19 @@ from novel_agent.services.retrieval import ROUTES
 
 ModelRequestFactory = Callable[[str, AgentMode, int], ModelRequest]
 ModelT = TypeVar("ModelT", bound=BaseModel)
+
+CONTROLLED_REVISION_EVIDENCE_MEDIA_TYPE = (
+    "application/vnd.novel-agent.controlled-revision-evidence+json"
+)
+_ARC_RESPONSIBILITY_CONTEXT_FIELDS = (
+    "protagonist_arc",
+    "supporting_arc",
+    "faction_arc",
+    "obligation_plan",
+)
+_MAX_CONTROLLED_REVISION_ENTITIES = 128
+_MAX_CONTROLLED_REVISION_STATES = 64
+_MAX_CONTROLLED_REVISION_RELATIONS = 64
 
 
 def _planner_memory_question_chunk_size(request: PlanningLoopRequest) -> int:
@@ -924,15 +939,31 @@ class PlanningContextLoopService:
         active_revision_artifact_refs = request.revision_artifact_refs
         active_revision_review_artifact_refs = request.revision_review_artifact_refs
         active_revision_parent_ref = revision_parent_ref
+        controlled_revision_evidence_ref: ArtifactRef | None = None
+        controlled_revision_evidence_text: str | None = None
 
         def build_planner_source_payload(rendered_context: str) -> str:
-            return self._planner_source_payload(
+            payload = self._planner_source_payload(
                 rendered_context,
                 visible_author_artifacts,
                 active_revision_artifact_refs,
                 revision_review_artifacts=active_revision_review_artifact_refs,
                 revision_parent=revision_parent,
+                revision_review=revision_review,
             )
+            if (
+                revision_parent is not None
+                and world is not None
+                and controlled_revision_evidence_text is None
+            ):
+                payload += f"\n\n{self._world_entity_label_payload(world)}"
+            if controlled_revision_evidence_text is not None:
+                payload += (
+                    '\n\n<CONTROLLED_REVISION_EVIDENCE authority="accepted-world-parent">\n'
+                    + controlled_revision_evidence_text
+                    + "\n</CONTROLLED_REVISION_EVIDENCE>"
+                )
+            return payload
 
         def planner_trusted_context_artifacts(
             *refs: ArtifactRef,
@@ -946,6 +977,11 @@ class PlanningContextLoopService:
                         *(
                             (active_revision_parent_ref,)
                             if active_revision_parent_ref is not None
+                            else ()
+                        ),
+                        *(
+                            (controlled_revision_evidence_ref,)
+                            if controlled_revision_evidence_ref is not None
                             else ()
                         ),
                     )
@@ -967,9 +1003,38 @@ class PlanningContextLoopService:
                 event_refs,
                 diagnostics=("POST_GENESIS_BASIS_MISMATCH",),
             )
+        if revision_parent is not None and revision_review is not None and world is not None:
+            controlled_revision_evidence = self._controlled_revision_evidence_payload(
+                world,
+                revision_parent,
+                revision_review,
+            )
+            controlled_revision_evidence_bytes = canonical_json_bytes(controlled_revision_evidence)
+            controlled_revision_evidence_ref = self._artifacts.put(
+                controlled_revision_evidence_bytes,
+                CONTROLLED_REVISION_EVIDENCE_MEDIA_TYPE,
+                self._schema_version,
+            )
+            controlled_revision_evidence_text = controlled_revision_evidence_bytes.decode("utf-8")
         if world is not None:
             source_payload = f"{source_payload}\n\n{self._world_entity_label_payload(world)}"
+        if revision_parent is not None:
+            source_payload += (
+                "\n\nCONTROLLED_REVISION_INQUIRY=true\n"
+                "This inquiry is only a bounded control repair. Return no Memory questions "
+                "for parent-plan fields; keep questions and assumptions empty when the "
+                "operator scope already identifies the repair."
+            )
         event_refs.append(self._event(request, PlanningLoopPhase.PREFLIGHT, "preflight.passed"))
+        if controlled_revision_evidence_ref is not None:
+            event_refs.append(
+                self._event(
+                    request,
+                    PlanningLoopPhase.PREFLIGHT,
+                    "controlled_revision.evidence_projected",
+                    (controlled_revision_evidence_ref,),
+                )
+            )
 
         checkpoint = (
             None
@@ -1276,7 +1341,10 @@ class PlanningContextLoopService:
                         inquiry_ref=inquiry_ref,
                         inquiry_review_ref=inquiry_review_ref,
                     )
-                if not need_generation.needs:
+                controlled_revision_without_memory = (
+                    revision_parent is not None and not need_generation.needs
+                )
+                if not need_generation.needs and not controlled_revision_without_memory:
                     return self._terminal(
                         request,
                         PlanningLoopTerminal.MEMORY_INSUFFICIENT,
@@ -1285,97 +1353,136 @@ class PlanningContextLoopService:
                         inquiry_review_ref=inquiry_review_ref,
                         diagnostics=("NO_VALID_PLANNER_MEMORY_NEEDS",),
                     )
-                deferred_memory_questions.update(
-                    getattr(need_generation, "deferred_question_ids", ())
-                )
-                try:
-                    memory_result = await self._resolve_memory(
-                        request=request,
-                        needs=need_generation.needs,
-                        text_root=text_root,
-                        suffix="inquiry",
+                if controlled_revision_without_memory:
+                    assert request.task.base_commit is not None
+                    assert request.snapshot_id is not None
+                    assert revision_parent_id is not None
+                    stage1_context = Stage1ContextPackage(
+                        context_id=StableId(
+                            "context.controlled-revision."
+                            + content_id(
+                                {
+                                    "request": request.request_id.root,
+                                    "inquiry": inquiry.inquiry_id.root,
+                                    "parent": revision_parent_id.root,
+                                }
+                            ).root[-48:]
+                        ),
+                        base_commit=request.task.base_commit,
+                        snapshot_id=request.snapshot_id,
+                        task_contract="stage4:controlled_revision:no_memory",
+                        budget_report=ContextBudgetReport(
+                            token_budget=request.budgets.context.token_budget,
+                            mandatory_tokens=0,
+                            optional_tokens=0,
+                            full_chapter_read_count=0,
+                        ),
                     )
-                    resolved_context = memory_result.context
-                    resolved_context_ref = memory_result.frozen_context_artifact
-                except MemoryGatewayBlockedError:
-                    return self._terminal(
-                        request,
-                        PlanningLoopTerminal.MEMORY_INSUFFICIENT,
-                        event_refs,
-                        inquiry_ref=inquiry_ref,
-                        inquiry_review_ref=inquiry_review_ref,
-                        diagnostics=("MEMORY_GATEWAY_BLOCKED",),
+                    memory_context_ref = self._artifacts.put(
+                        canonical_json_bytes(stage1_context.model_dump(mode="json")),
+                        "application/vnd.novel-agent.stage1-context+json",
+                        self._schema_version,
                     )
-                stop_reason = memory_result.selected_result.stop_reason
-                partial_memory = self._partial_memory_context(memory_result)
-                if stop_reason is ControllerStopReason.BUDGET_EXHAUSTED:
-                    if partial_memory is None:
-                        event_refs.append(
-                            self._checkpoint(
-                                request,
-                                PlanningLoopPhase.INQUIRY_ACCEPTED,
-                                inquiry_ref=inquiry_ref,
-                                inquiry_review_ref=inquiry_review_ref,
-                                inquiry_revisions_used=inquiry_revisions,
-                                problem_identity_seed=problem_identity_seed,
-                                **progress_updates(),
-                            )
+                    event_refs.append(
+                        self._event(
+                            request,
+                            PlanningLoopPhase.MEMORY_RESOLVED,
+                            "memory.skipped_controlled_revision",
+                            (memory_context_ref,),
                         )
+                    )
+                else:
+                    deferred_memory_questions.update(
+                        getattr(need_generation, "deferred_question_ids", ())
+                    )
+                    try:
+                        memory_result = await self._resolve_memory(
+                            request=request,
+                            needs=need_generation.needs,
+                            text_root=text_root,
+                            suffix="inquiry",
+                        )
+                        resolved_context = memory_result.context
+                        resolved_context_ref = memory_result.frozen_context_artifact
+                    except MemoryGatewayBlockedError:
                         return self._terminal(
                             request,
-                            PlanningLoopTerminal.YIELDED,
+                            PlanningLoopTerminal.MEMORY_INSUFFICIENT,
                             event_refs,
                             inquiry_ref=inquiry_ref,
                             inquiry_review_ref=inquiry_review_ref,
-                            diagnostics=("INQUIRY_MEMORY_BUDGET_EXHAUSTED",),
+                            diagnostics=("MEMORY_GATEWAY_BLOCKED",),
                         )
-                    resolved_context, resolved_context_ref = partial_memory
-                    stop_reason = ControllerStopReason.NO_ADDITIONAL_EVIDENCE
-                mandatory_total = memory_result.selected_result.mandatory_need_facets_total
-                mandatory_closed = memory_result.selected_result.mandatory_need_facets_closed
-                if mandatory_closed < mandatory_total and partial_memory is None:
-                    return self._terminal(
-                        request,
-                        PlanningLoopTerminal.MEMORY_INSUFFICIENT,
-                        event_refs,
-                        inquiry_ref=inquiry_ref,
-                        inquiry_review_ref=inquiry_review_ref,
-                        diagnostics=("MANDATORY_MEMORY_FACETS_UNRESOLVED",),
+                    stop_reason = memory_result.selected_result.stop_reason
+                    partial_memory = self._partial_memory_context(memory_result)
+                    if stop_reason is ControllerStopReason.BUDGET_EXHAUSTED:
+                        if partial_memory is None:
+                            event_refs.append(
+                                self._checkpoint(
+                                    request,
+                                    PlanningLoopPhase.INQUIRY_ACCEPTED,
+                                    inquiry_ref=inquiry_ref,
+                                    inquiry_review_ref=inquiry_review_ref,
+                                    inquiry_revisions_used=inquiry_revisions,
+                                    problem_identity_seed=problem_identity_seed,
+                                    **progress_updates(),
+                                )
+                            )
+                            return self._terminal(
+                                request,
+                                PlanningLoopTerminal.YIELDED,
+                                event_refs,
+                                inquiry_ref=inquiry_ref,
+                                inquiry_review_ref=inquiry_review_ref,
+                                diagnostics=("INQUIRY_MEMORY_BUDGET_EXHAUSTED",),
+                            )
+                        resolved_context, resolved_context_ref = partial_memory
+                        stop_reason = ControllerStopReason.NO_ADDITIONAL_EVIDENCE
+                    mandatory_total = memory_result.selected_result.mandatory_need_facets_total
+                    mandatory_closed = memory_result.selected_result.mandatory_need_facets_closed
+                    if mandatory_closed < mandatory_total and partial_memory is None:
+                        return self._terminal(
+                            request,
+                            PlanningLoopTerminal.MEMORY_INSUFFICIENT,
+                            event_refs,
+                            inquiry_ref=inquiry_ref,
+                            inquiry_review_ref=inquiry_review_ref,
+                            diagnostics=("MANDATORY_MEMORY_FACETS_UNRESOLVED",),
+                        )
+                    if stop_reason not in {
+                        ControllerStopReason.SUFFICIENT,
+                        ControllerStopReason.NO_ADDITIONAL_EVIDENCE,
+                    }:
+                        terminal = (
+                            PlanningLoopTerminal.PLAN_CONFLICT
+                            if stop_reason is ControllerStopReason.CONFLICT_REQUIRES_REVIEW
+                            else PlanningLoopTerminal.MEMORY_INSUFFICIENT
+                        )
+                        return self._terminal(
+                            request,
+                            terminal,
+                            event_refs,
+                            inquiry_ref=inquiry_ref,
+                            inquiry_review_ref=inquiry_review_ref,
+                            diagnostics=(stop_reason.value,),
+                        )
+                    handled_memory_questions.update(
+                        handled_question_ids_for_supported_needs(
+                            tuple(getattr(need_generation, "selected_question_ids", ())),
+                            need_generation.needs,
+                            memory_result.context.retrieval_traces,
+                        )
                     )
-                if stop_reason not in {
-                    ControllerStopReason.SUFFICIENT,
-                    ControllerStopReason.NO_ADDITIONAL_EVIDENCE,
-                }:
-                    terminal = (
-                        PlanningLoopTerminal.PLAN_CONFLICT
-                        if stop_reason is ControllerStopReason.CONFLICT_REQUIRES_REVIEW
-                        else PlanningLoopTerminal.MEMORY_INSUFFICIENT
+                    stage1_context = resolved_context
+                    memory_context_ref = resolved_context_ref
+                    event_refs.append(
+                        self._event(
+                            request,
+                            PlanningLoopPhase.MEMORY_RESOLVED,
+                            "memory.resolved",
+                            (memory_context_ref,),
+                        )
                     )
-                    return self._terminal(
-                        request,
-                        terminal,
-                        event_refs,
-                        inquiry_ref=inquiry_ref,
-                        inquiry_review_ref=inquiry_review_ref,
-                        diagnostics=(stop_reason.value,),
-                    )
-                handled_memory_questions.update(
-                    handled_question_ids_for_supported_needs(
-                        tuple(getattr(need_generation, "selected_question_ids", ())),
-                        need_generation.needs,
-                        memory_result.context.retrieval_traces,
-                    )
-                )
-                stage1_context = resolved_context
-                memory_context_ref = resolved_context_ref
-                event_refs.append(
-                    self._event(
-                        request,
-                        PlanningLoopPhase.MEMORY_RESOLVED,
-                        "memory.resolved",
-                        (memory_context_ref,),
-                    )
-                )
 
         try:
             if checkpoint is not None and checkpoint.planner_context_ref is not None:
@@ -1409,7 +1516,7 @@ class PlanningContextLoopService:
                     seed=planner_context,
                     seed_ref=planner_context_ref,
                 )
-        except PlannerContextAssemblyError:
+        except PlannerContextAssemblyError as error:
             return self._terminal(
                 request,
                 PlanningLoopTerminal.CONTEXT_LIMIT,
@@ -1417,6 +1524,7 @@ class PlanningContextLoopService:
                 inquiry_ref=inquiry_ref,
                 inquiry_review_ref=inquiry_review_ref,
                 memory_context_ref=memory_context_ref,
+                diagnostics=("PLANNER_CONTEXT_ASSEMBLY_ERROR", str(error)[:240]),
             )
         if projection.suspended:
             return self._terminal(
@@ -1548,6 +1656,11 @@ class PlanningContextLoopService:
                     *visible_author_artifacts,
                     planner_context_ref,
                     projection.view_ref,
+                    *(
+                        (controlled_revision_evidence_ref,)
+                        if controlled_revision_evidence_ref is not None
+                        else ()
+                    ),
                 ),
                 request=model_request("plan_review", request.task.mode, 1),
                 base_commit=request.task.base_commit,
@@ -2129,6 +2242,64 @@ class PlanningContextLoopService:
                 )
                 record_model_call(_call)
                 if turn.action is PlanningTurnAction.REQUEST_MEMORY:
+                    if revision_parent is not None:
+                        retry_turn, result, _call = await run_turn(
+                            version=self._schema_version,
+                            task=request.task,
+                            source_payload=(
+                                planner_source_payload
+                                + "\n\nCONTROLLED_REVISION_MEMORY_FORBIDDEN=true\n"
+                                "Use CONTROLLED_REVISION_EVIDENCE as the factual basis for the "
+                                "authorized fields. For owner_ids, owner means the continuing "
+                                "narrative subject and retrieval anchor, not a grantor, teacher, "
+                                "information holder, location, or incidental participant. The "
+                                "same canonical subject may correctly own many obligations. "
+                                "For each obligation, apply explicit_subject_rule and copy the "
+                                "provided explicitly_named_subject_ids when its parent arc "
+                                "confirms the named subject's transition; questions asking "
+                                "whether that rule applies are contract decisions, not Memory. "
+                                "For any authorized *.serves repair, copy one exact "
+                                "obligation_id from accepted_world_obligations whose description "
+                                "and window match that stage; never retain a legacy lock.* handle. "
+                                "Author PLAN_READY now without requesting historical Memory or "
+                                "adding unresolved items."
+                            ),
+                            source_artifacts=visible_author_artifacts,
+                            trusted_context_artifacts=planner_trusted_context_artifacts(
+                                planner_context_ref,
+                                projection.view_ref,
+                                *planner_memory_context_refs,
+                            ),
+                            parent_proposal_id=revision_parent_id,
+                            reviewed_inquiry_ref=inquiry_ref,
+                            memory_need_ids=planner_context.need_ids,
+                            evidence_refs=planner_context.evidence_refs,
+                            graph_path_receipt_refs=planner_context.graph_path_receipt_refs,
+                            request=model_request(
+                                "plan_controlled_revision_memory_forbidden",
+                                request.task.mode,
+                                planner_memory_rounds + 2,
+                            ),
+                            allowed_skill_ids=planner_skill_allowlist(
+                                include_alternative=(
+                                    request.task.mode is AgentMode.REPLAN or plan_revisions > 0
+                                )
+                            ),
+                        )
+                        record_model_call(_call)
+                        if retry_turn.action is PlanningTurnAction.REQUEST_MEMORY:
+                            return self._terminal(
+                                request,
+                                PlanningLoopTerminal.REVIEW_REQUIRED,
+                                event_refs,
+                                inquiry_ref=inquiry_ref,
+                                inquiry_review_ref=inquiry_review_ref,
+                                memory_context_ref=memory_context_ref,
+                                planner_context_ref=planner_context_ref,
+                                diagnostics=("CONTROLLED_REVISION_MEMORY_REQUESTED",),
+                            )
+                        assert result is not None
+                        break
                     if request.task.mode is AgentMode.PROJECT_BOOTSTRAP:
                         return self._terminal(
                             request,
@@ -2369,6 +2540,11 @@ class PlanningContextLoopService:
                         *visible_author_artifacts,
                         planner_context_ref,
                         projection.view_ref,
+                        *(
+                            (controlled_revision_evidence_ref,)
+                            if controlled_revision_evidence_ref is not None
+                            else ()
+                        ),
                     ),
                     request=model_request("plan_review", request.task.mode, 1),
                     base_commit=request.task.base_commit,
@@ -2394,6 +2570,11 @@ class PlanningContextLoopService:
                             *visible_author_artifacts,
                             planner_context_ref,
                             projection.view_ref,
+                            *(
+                                (controlled_revision_evidence_ref,)
+                                if controlled_revision_evidence_ref is not None
+                                else ()
+                            ),
                         ),
                         request=model_request("plan_review_citation_repair", request.task.mode, 2),
                         base_commit=request.task.base_commit,
@@ -2977,6 +3158,11 @@ class PlanningContextLoopService:
                     *visible_author_artifacts,
                     planner_context_ref,
                     projection.view_ref,
+                    *(
+                        (controlled_revision_evidence_ref,)
+                        if controlled_revision_evidence_ref is not None
+                        else ()
+                    ),
                 ),
                 request=model_request("plan_rereview", request.task.mode, attempt),
                 base_commit=request.task.base_commit,
@@ -3104,6 +3290,7 @@ class PlanningContextLoopService:
         *,
         revision_review_artifacts: tuple[ArtifactRef, ...] = (),
         revision_parent: PlanProposal | None = None,
+        revision_review: OperatorReviewEvidence | None = None,
     ) -> str:
         """Keep the complete author authority in every Planner model prompt.
 
@@ -3115,15 +3302,43 @@ class PlanningContextLoopService:
 
         author_parts = self._source_parts(author_artifacts)
         payload = rendered_context
-        if author_parts and not all(part in rendered_context for part in author_parts):
+        if (
+            revision_parent is None
+            and author_parts
+            and not all(part in rendered_context for part in author_parts)
+        ):
             authority = "\n\n".join(author_parts)
             payload = f"{payload}\n\n<AUTHOR_AUTHORITY_TEXT>\n{authority}\n</AUTHOR_AUTHORITY_TEXT>"
-        revision_parts = self._source_parts(revision_artifacts)
-        if revision_parts:
-            directives = "\n\n".join(revision_parts)
+        feedback_artifacts = tuple(
+            ref
+            for ref in revision_artifacts
+            if ref.media_type == "application/vnd.novel-agent.plan-review-draft+json"
+        )
+        directive_parts = self._source_parts(
+            tuple(ref for ref in revision_artifacts if ref not in feedback_artifacts)
+        )
+        if directive_parts:
+            directives = "\n\n".join(directive_parts)
             payload = (
                 f"{payload}\n\n<CONTROLLED_REVISION_DIRECTIVES>\n{directives}"
                 "\n</CONTROLLED_REVISION_DIRECTIVES>"
+            )
+        feedback_parts = self._source_parts(feedback_artifacts)
+        if feedback_parts:
+            payload = (
+                f"{payload}\n\n<HOST_MECHANICAL_RECOVERY_FEEDBACK "
+                'authority="host-validation" narrative_authority="none">\n'
+                "The previous candidate failed these deterministic host checks. "
+                "Return a complete replacement candidate and repair every named field. "
+                "This feedback grants no story facts and no waiver. A chapter after "
+                "chapter 1 may use NOT_REQUIRED only when trusted context contains an "
+                "exact host-issued approval receipt and waiver_ref; never invent or "
+                "extend a first-chapter waiver. For chapter 1, either omit "
+                "history_retrieval so the host supplies it, or use exactly "
+                "requirement=NOT_REQUIRED, reason_code=first_chapter, and "
+                "waiver_ref=waiver.history.first_chapter.\n"
+                + "\n\n".join(feedback_parts)
+                + "\n</HOST_MECHANICAL_RECOVERY_FEEDBACK>"
             )
         review_parts = self._source_parts(revision_review_artifacts)
         if review_parts:
@@ -3136,12 +3351,21 @@ class PlanningContextLoopService:
                 + "\n</HOST_REVISION_REVIEW>"
             )
         if revision_parent is not None:
-            payload += self._revision_parent_payload(revision_parent)
+            payload += self._revision_parent_payload(revision_parent, revision_review)
         return payload
 
     @staticmethod
-    def _revision_parent_payload(parent: PlanProposal) -> str:
-        """Expose only stable revision identities, not a second author source."""
+    def _revision_parent_payload(
+        parent: PlanProposal,
+        review: OperatorReviewEvidence | None = None,
+    ) -> str:
+        """Expose the bounded parent baseline needed for a complete revision output.
+
+        The parent is control data, not a second author source.  The host restores every
+        out-of-scope byte, so the model only needs stable issue identities and the exact
+        operator scope.  Repeating the complete parent proposal here made a small repair
+        exceed the provider context budget before planning began.
+        """
 
         unresolved = tuple(
             {
@@ -3154,6 +3378,8 @@ class PlanningContextLoopService:
             }
             for issue in parent.unresolved
         )
+        scope = None if review is None else operator_revision_scope(review).model_dump(mode="json")
+        scope_json = canonical_json_bytes(scope).decode("utf-8")
         return (
             '\n\n<REVISION_PARENT_IDENTITY authority="control">\n'
             f"parent_proposal_id={parent.proposal_id.root}\n"
@@ -3164,6 +3390,11 @@ class PlanningContextLoopService:
             "父候选中未被宿主点名的条目由宿主按原字节恢复，模型可以省略它们。\n"  # noqa: RUF001
             f"UNRESOLVED_IDENTITIES={unresolved}\n"
             "</REVISION_PARENT_IDENTITY>"
+            '\n\n<REVISION_PARENT_SCOPE authority="control">\n'
+            "只输出 CONTROLLED_REVISION_DIRECTIVES 授权的 item/字段；其他字段和 unresolved "  # noqa: RUF001
+            "由宿主从父候选恢复。不要为读取父候选字段发起 REQUEST_MEMORY。\n"
+            f"REVISION_SCOPE_JSON={scope_json}\n"
+            "</REVISION_PARENT_SCOPE>"
         )
 
     def _source_parts(self, artifacts: tuple[ArtifactRef, ...]) -> tuple[str, ...]:
@@ -3177,15 +3408,173 @@ class PlanningContextLoopService:
 
     @staticmethod
     def _world_entity_label_payload(world: WorldRootDocument) -> str:
-        labels = tuple(
-            dict.fromkeys(
-                label
-                for entity in world.entities
-                for label in (entity.internal_label, *entity.aliases)
-                if label.strip()
-            )
+        catalogue = tuple(
+            {
+                "entity_id": entity.entity_id.root,
+                "entity_type": entity.entity_type,
+                "internal_label": entity.internal_label,
+                "aliases": entity.aliases,
+            }
+            for entity in world.entities
         )
-        return "WORLD_ENTITY_LABELS=" + " | ".join(labels)
+        return "WORLD_ENTITY_LABELS_JSON=" + canonical_json_bytes(catalogue).decode("utf-8")
+
+    @staticmethod
+    def _controlled_revision_evidence_payload(
+        world: WorldRootDocument,
+        parent: PlanProposal,
+        review: OperatorReviewEvidence,
+    ) -> dict[str, object]:
+        """Project bounded owner evidence without opening historical Memory.
+
+        A revision scope says which bytes may change; it does not establish the
+        replacement values.  This projection keeps the accepted World identity map
+        and the authorised parent's neighbouring ARC semantics together in one
+        content-addressed artifact.  It is deliberately compact and deterministic so
+        a resumed checkpoint sees the same evidence and the Planner cannot confuse an
+        obligation owner with its grantor or an information holder.
+        """
+
+        scope = operator_revision_scope(review)
+        target_ids = {target.item_id for target in scope.targets}
+
+        def explicitly_named_subject_ids(summary: object) -> tuple[str, ...]:
+            if not isinstance(summary, str):
+                return ()
+            folded = summary.casefold()
+            return tuple(
+                entity.entity_id.root
+                for entity in world.entities
+                if any(
+                    label.strip() and label.casefold() in folded
+                    for label in (entity.internal_label, *entity.aliases)
+                )
+            )
+
+        item_context: tuple[dict[str, object], ...] = tuple(
+            {
+                "item_id": item.item_id.root,
+                "kind": item.kind,
+                "responsibility_context": {
+                    field: (
+                        tuple(
+                            {
+                                "index": index,
+                                "kind": entry.get("kind"),
+                                "summary": entry.get("summary"),
+                                "explicitly_named_subject_ids": explicitly_named_subject_ids(
+                                    entry.get("summary")
+                                ),
+                            }
+                            for index, entry in enumerate(value)
+                            if isinstance(entry, dict)
+                        )
+                        if field == "obligation_plan" and isinstance(value, list)
+                        else value
+                    )
+                    for field in _ARC_RESPONSIBILITY_CONTEXT_FIELDS
+                    if (value := item.payload.get(field)) is not None
+                },
+            }
+            for item in parent.items
+            if item.item_id in target_ids
+        )
+        semantic_text = canonical_json_bytes(item_context).decode("utf-8").casefold()
+        relevant_entity_ids = {
+            entity.entity_id
+            for entity in world.entities
+            if any(
+                label.strip() and label.casefold() in semantic_text
+                for label in (entity.internal_label, *entity.aliases)
+            )
+        }
+        matching_entities = tuple(
+            entity for entity in world.entities if entity.entity_id in relevant_entity_ids
+        )
+        selected_entities = (matching_entities if matching_entities else world.entities)[
+            :_MAX_CONTROLLED_REVISION_ENTITIES
+        ]
+        entity_catalogue = tuple(
+            {
+                "entity_id": entity.entity_id.root,
+                "entity_type": entity.entity_type,
+                "internal_label": entity.internal_label,
+                "aliases": entity.aliases,
+                "identity_invariants": entity.identity_invariants[:4],
+            }
+            for entity in selected_entities
+        )
+        relevant_states = tuple(
+            {
+                "subject_id": state.subject_id.root,
+                "predicate": state.predicate,
+                "value": state.value,
+                "truth_class": state.truth_class.value,
+            }
+            for state in world.states
+            if state.subject_id in relevant_entity_ids
+        )[:_MAX_CONTROLLED_REVISION_STATES]
+        relevant_relations = tuple(
+            {
+                "subject_id": relation.subject_id.root,
+                "predicate": relation.predicate,
+                "object_id": relation.object_id.root,
+                "truth_class": relation.truth_class.value,
+            }
+            for relation in world.relations
+            if relation.subject_id in relevant_entity_ids
+            or relation.object_id in relevant_entity_ids
+        )[:_MAX_CONTROLLED_REVISION_RELATIONS]
+        return {
+            "evidence_version": "controlled-revision-evidence.v2",
+            "source_commit": world.source_commit.root,
+            "source_world_root": world.root_hash.root,
+            "parent_proposal_id": parent.proposal_id.root,
+            "revision_scope": scope.model_dump(mode="json"),
+            "owner_ids_semantics": OBLIGATION_OWNER_SEMANTICS,
+            "owner_role_rules": (
+                "Do not diversify owner_ids for variety. Bind every obligation to its "
+                "actual continuing narrative subject; repeated owners are valid."
+            ),
+            "explicit_subject_rule": (
+                "When an obligation summary explicitly names a canonical subject and the "
+                "parent protagonist/supporting/faction arc confirms that subject undergoes "
+                "the promised transition, explicitly_named_subject_ids is sufficient owner "
+                "evidence. Do not add an enabling teacher, relative, crafter, organization, "
+                "or information holder unless that entity's own continuing state is part of "
+                "the obligation. This is a contract decision, not a Memory question."
+            ),
+            "world_entities": entity_catalogue,
+            "world_entity_catalogue_complete": len(selected_entities) == len(world.entities),
+            "world_entity_count": len(world.entities),
+            "world_entity_selection": (
+                "entities whose canonical label or alias occurs in the authorized parent ARC "
+                "responsibility context"
+            ),
+            "relevant_world_states": relevant_states,
+            "relevant_world_states_truncated": len(relevant_states)
+            < sum(state.subject_id in relevant_entity_ids for state in world.states),
+            "relevant_world_relations": relevant_relations,
+            "relevant_world_relations_truncated": len(relevant_relations)
+            < sum(
+                relation.subject_id in relevant_entity_ids
+                or relation.object_id in relevant_entity_ids
+                for relation in world.relations
+            ),
+            "accepted_world_obligations": tuple(
+                {
+                    "obligation_id": obligation.obligation_id.root,
+                    "description": obligation.description,
+                    "kind": obligation.kind.value,
+                    "not_before_chapter": obligation.not_before_chapter,
+                    "due_chapter": obligation.due_chapter,
+                    "target_chapter_start": obligation.target_chapter_start,
+                    "target_chapter_end": obligation.target_chapter_end,
+                }
+                for obligation in world.obligations
+            ),
+            "authorized_parent_item_context": item_context,
+        }
 
     @staticmethod
     def _same_inquiry_content(left: PlanningInquiry, right: PlanningInquiry) -> bool:
@@ -3286,13 +3675,17 @@ class PlanningContextLoopService:
         phase: PlanningLoopPhase,
         event_kind: str,
         refs: tuple[ArtifactRef, ...] = (),
+        *,
+        payload: dict[str, object] | None = None,
     ) -> ArtifactRef:
+        event_payload = cast(dict[str, JsonValue], payload or {})
         identity = content_id(
             {
                 "request": request.request_id.root,
                 "phase": phase.value,
                 "kind": event_kind,
                 "refs": tuple(item.artifact_id.root for item in refs),
+                "payload": event_payload,
             }
         ).root.removeprefix("sha256:")[:24]
         event = PlanningLoopEventReceipt(
@@ -3301,6 +3694,7 @@ class PlanningContextLoopService:
             phase=phase,
             event_kind=event_kind,
             artifact_refs=refs,
+            payload=event_payload,
         )
         return self._artifacts.put(
             canonical_json_bytes(event.model_dump(mode="json")),
@@ -3367,6 +3761,7 @@ class PlanningContextLoopService:
                     )
                     if item is not None
                 ),
+                payload={"diagnostic_codes": list(diagnostics)} if diagnostics else None,
             )
         )
         return PlanningLoopResult(

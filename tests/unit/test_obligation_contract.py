@@ -133,6 +133,7 @@ def test_declaration_payload_exposes_only_binder_inputs() -> None:
         "kind": "objective",
         "summary": "陆沉舟获得铜铭",
         "not_before_chapter": 1,
+        "owner_ids": [],
     }
 
 

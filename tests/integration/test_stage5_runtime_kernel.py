@@ -475,6 +475,24 @@ def test_control_unblock_cancel_and_operator_reconcile_are_audited(
         changed_evidence_refs=(evidence,),
     )
     assert ready.status is TaskStatus.READY and ready.block_cause is None
+
+    recovery = commands.create_run_and_initial_task(_request("run.control.recovery", base))
+    _, recovery_fence = commands.claim(recovery.task_id, worker_id="worker.recovery")
+    commands.mark_started(recovery_fence)
+    recovery = commands.settle_attempt(
+        recovery_fence,
+        outcome=AttemptOutcome.SUSPENDED,
+        terminal_status=TaskStatus.RECOVERY_PENDING,
+        failure_class=FailureClass.UNKNOWN,
+    )
+    recovered = commands.unblock(
+        recovery.task_id,
+        command_id=StableId("unblock.recovery"),
+        actor_id="operator",
+        block_cause_fingerprint=_digest("unknown"),
+        changed_evidence_refs=(evidence,),
+    )
+    assert recovered.status is TaskStatus.READY
     _, new_fence = commands.claim(ready.task_id, worker_id="worker.new")
     cancelled = commands.control(
         ready.task_id,

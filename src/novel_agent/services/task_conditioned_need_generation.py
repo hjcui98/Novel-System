@@ -52,6 +52,7 @@ from novel_agent.domain.planning_memory import (
     PlannerRunResult,
 )
 from novel_agent.domain.retrieval_decision import (
+    FIRST_CHAPTER_WAIVER_REF,
     HistoryRetrievalDecision,
     HistoryRetrievalNeed,
     HistoryRetrievalReasonCode,
@@ -304,9 +305,21 @@ class TaskPlanConditionedNeedGenerator:
             for index, need in enumerate(decision.needs)
         )
         host_candidates = self._host_derived_history_needs(goals, world, target_chapter)
-        if host_candidates and requirement is not HistoryRetrievalRequirement.REQUIRED:
+        first_chapter_waiver = (
+            target_chapter == 1
+            and requirement is HistoryRetrievalRequirement.NOT_REQUIRED
+            and all(decision.waiver_ref == FIRST_CHAPTER_WAIVER_REF for decision in decisions)
+        )
+        if (
+            host_candidates
+            and requirement is not HistoryRetrievalRequirement.REQUIRED
+            and not first_chapter_waiver
+        ):
             # Host-derived deterministic Needs override a planner NOT_REQUIRED or
-            # missing decision: open obligations always need their setup evidence.
+            # missing decision: open obligations always need their setup evidence.  The
+            # empty-canon first chapter is the one deliberate exception: G1 grants a
+            # host-issued waiver so the first Writer can establish the history that
+            # later chapters will retrieve.
             requirement = HistoryRetrievalRequirement.REQUIRED
             reason_code = None
             waiver_ref = None
@@ -374,7 +387,17 @@ class TaskPlanConditionedNeedGenerator:
         for index, candidate in enumerate(candidates):
             kind = candidate.need.kind
             query = candidate.need.query
-            selected_entities = tuple(dict.fromkeys(candidate.need.entity_ids))
+            if candidate.source == "planner" and (
+                candidate.need.source_chapter_end is None
+                or candidate.need.source_chapter_end >= target_chapter
+            ):
+                raise ValueError("history Need source_chapter_end must precede the target chapter")
+            selected_entities = tuple(
+                dict.fromkeys(
+                    self._canonical_history_entity_id(entity_id, entity_ids)
+                    for entity_id in candidate.need.entity_ids
+                )
+            )
             if not set(selected_entities).issubset(entity_ids):
                 raise ValueError("history Need references an unknown entity")
             need_id = bounded_stable_id(
@@ -569,6 +592,22 @@ class TaskPlanConditionedNeedGenerator:
                     )
                 )
         return tuple(candidates)
+
+    @staticmethod
+    def _canonical_history_entity_id(
+        entity_id: StableId,
+        canonical_ids: set[StableId],
+    ) -> StableId:
+        """Resolve the legacy planner display prefix only when the suffix is exact."""
+
+        if entity_id in canonical_ids:
+            return entity_id
+        prefix = "planner-context.unit.anchor."
+        if entity_id.root.startswith(prefix):
+            candidate = StableId(entity_id.root.removeprefix(prefix))
+            if candidate in canonical_ids:
+                return candidate
+        return entity_id
 
     @staticmethod
     def _participating_entities(goal: ChapterGoal, world: WorldRootDocument) -> tuple[Entity, ...]:

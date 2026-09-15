@@ -20,6 +20,11 @@ from novel_agent.agents.planner import (
 from novel_agent.agents.runner import StructuredAgentRunner
 from novel_agent.domain.agent_context import ContextConsumer, ContextItemKind
 from novel_agent.domain.artifacts import ArtifactRef
+from novel_agent.domain.creative_runtime import (
+    OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+    OperatorReviewEvidence,
+    OperatorReviewFinding,
+)
 from novel_agent.domain.ids import ArtifactId, CommitId, RunId, SchemaVersion, StableId, TaskId
 from novel_agent.domain.memory import (
     ChannelHit,
@@ -2205,8 +2210,92 @@ def test_post_genesis_inquiry_receives_exact_world_entity_labels(tmp_path: Path)
 
     assert len(planner.inquiry_source_payloads) == 1
     payload = planner.inquiry_source_payloads[0]
-    assert "WORLD_ENTITY_LABELS=" in payload
+    assert "WORLD_ENTITY_LABELS_JSON=" in payload
+    assert world.entities[0].entity_id.root in payload
     assert world.entities[0].internal_label in payload
+
+
+def test_controlled_revision_evidence_projects_owner_semantics_and_arc_context() -> None:
+    world = make_synthetic_bundle().world_roots[0]
+    state_subject = world.states[0].subject_id
+    subject = next(entity for entity in world.entities if entity.entity_id == state_subject)
+    item_id = StableId("plan-item.arc.owner-evidence")
+    parent = PlanProposal(
+        proposal_id=StableId("plan-proposal.arc.owner-evidence"),
+        project_id=PROJECT,
+        mode=AgentMode.ARC_VOLUME,
+        base_commit=BASE,
+        items=(
+            ProposedItem(
+                item_id=item_id,
+                kind="arc_volume",
+                payload={
+                    "protagonist_arc": f"持续追踪{subject.internal_label}的成长状态",
+                    "supporting_arc": "支持角色只作为参与者",
+                    "faction_arc": "阵营状态保持可追踪",
+                    "obligation_plan": [
+                        {
+                            "summary": f"{subject.internal_label}完成阶段目标",
+                            "owner_ids": [],
+                        }
+                    ],
+                },
+                provenance=ProposalProvenance.PLANNER_PROPOSED,
+            ),
+        ),
+        coverage=1.0,
+        receipt=_receipt(AgentMode.ARC_VOLUME, AgentType.PLANNER),
+    )
+    review = OperatorReviewEvidence(
+        review_id=StableId("operator-review.arc.owner-evidence"),
+        target_artifact_ref=ArtifactRef(
+            artifact_id=HASH,
+            media_type="application/vnd.novel-agent.plan-proposal+json",
+            byte_length=1,
+            schema_version=VERSION,
+        ),
+        reviewer_id="operator.test",
+        reason="bind the narrative subject",
+        issues=(
+            OperatorReviewFinding(
+                issue_id=StableId("operator-finding.arc.owner-evidence"),
+                kind="OBLIGATION_OWNER_MISSING",
+                summary="owner is missing",
+                affected_item_ids=(item_id,),
+                field_path="obligation_plan[0].owner_ids",
+            ),
+        ),
+    )
+
+    evidence = PlanningContextLoopService._controlled_revision_evidence_payload(
+        world,
+        parent,
+        review,
+    )
+
+    assert evidence["owner_ids_semantics"]
+    assert evidence["evidence_version"] == "controlled-revision-evidence.v2"
+    assert "Do not diversify owner_ids for variety" in cast(str, evidence["owner_role_rules"])
+    assert "not a Memory question" in cast(str, evidence["explicit_subject_rule"])
+    entities = cast(tuple[dict[str, object], ...], evidence["world_entities"])
+    assert any(
+        row["entity_id"] == subject.entity_id.root
+        and row["internal_label"] == subject.internal_label
+        for row in entities
+    )
+    states = cast(tuple[dict[str, object], ...], evidence["relevant_world_states"])
+    assert any(row["subject_id"] == state_subject.root for row in states)
+    contexts = cast(tuple[dict[str, object], ...], evidence["authorized_parent_item_context"])
+    assert contexts[0]["item_id"] == item_id.root
+    responsibility_context = cast(dict[str, object], contexts[0]["responsibility_context"])
+    obligations = cast(tuple[dict[str, object], ...], responsibility_context["obligation_plan"])
+    assert obligations[0]["explicitly_named_subject_ids"] == (subject.entity_id.root,)
+    accepted_obligations = cast(
+        tuple[dict[str, object], ...], evidence["accepted_world_obligations"]
+    )
+    assert {row["obligation_id"] for row in accepted_obligations} == {
+        obligation.obligation_id.root for obligation in world.obligations
+    }
 
 
 def test_chapter_set_inquiry_receives_raw_author_brief(tmp_path: Path) -> None:
@@ -2342,6 +2431,131 @@ def test_revision_directive_reaches_planner_but_not_inquiry_or_memory_sources(
     plan_source_payload = cast(str, planner.plan_requests[0]["source_payload"])
     assert directive_text in plan_source_payload
     assert "<CONTROLLED_REVISION_DIRECTIVES>" in plan_source_payload
+
+
+def test_controlled_revision_without_memory_needs_reaches_plan_turn(tmp_path: Path) -> None:
+    bundle = make_synthetic_bundle()
+    world = bundle.world_roots[0]
+    text_root = bundle.text_roots[0]
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "controlled-no-memory"))
+    source = _put(artifacts, "author revision authority")
+    accepted = tuple(_put(artifacts, f"accepted-{index}") for index in range(3))
+    parent = PlanProposal(
+        proposal_id=StableId("plan-proposal.chapter_set.parent"),
+        project_id=PROJECT,
+        mode=AgentMode.CHAPTER_SET,
+        base_commit=BASE,
+        items=(
+            ProposedItem(
+                item_id=StableId("plan-item.chapter_set"),
+                kind="chapter_goal",
+                payload={"revision": 0, "goal": "goal-1", "ending_state": "end-1"},
+                provenance=ProposalProvenance.PLANNER_PROPOSED,
+            ),
+        ),
+        coverage=1.0,
+        receipt=_receipt(AgentMode.CHAPTER_SET, AgentType.PLANNER),
+    )
+    parent_ref = artifacts.put(
+        parent.model_dump_json().encode(),
+        "application/vnd.novel-agent.plan-proposal+json",
+        VERSION,
+    )
+    operator_review = OperatorReviewEvidence(
+        review_id=StableId("operator-review.controlled-no-memory"),
+        target_artifact_ref=parent_ref,
+        reviewer_id="operator.test",
+        reason="repair the bounded field",
+        issues=(
+            OperatorReviewFinding(
+                issue_id=StableId("operator-finding.controlled-no-memory"),
+                kind="field_repair",
+                summary="revision marker is stale",
+                affected_item_ids=(StableId("plan-item.chapter_set"),),
+                field_path="revision",
+                actual="0",
+                expected="1",
+            ),
+        ),
+    )
+    review_ref = artifacts.put(
+        operator_review.model_dump_json().encode(),
+        OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
+        VERSION,
+    )
+    planner = _MemoryThenReadyPlanner(artifacts, AgentMode.CHAPTER_SET)
+    reviewer_trusted_sources: list[tuple[ArtifactRef, ...]] = []
+
+    class _RecordingControlledReviewer(_ScriptedReviewer):
+        async def review(self, **kwargs: object) -> tuple[PlanReview, ArtifactRef, ModelCallRecord]:
+            if kwargs["target_kind"] is ReviewTargetKind.PLAN_PROPOSAL:
+                reviewer_trusted_sources.append(
+                    cast(tuple[ArtifactRef, ...], kwargs["trusted_source_artifacts"])
+                )
+            return await super().review(**kwargs)
+
+    service, _, memory = _post_genesis_service(
+        artifacts,
+        planner=planner,
+        reviewer=_RecordingControlledReviewer(
+            artifacts,
+            [ReviewDecision.ACCEPT, ReviewDecision.ACCEPT],
+        ),
+        needs=_NoNeeds(),
+    )
+    request = _request(
+        AgentMode.CHAPTER_SET,
+        source,
+        accepted=cast(tuple[ArtifactRef, ArtifactRef, ArtifactRef], accepted),
+    ).model_copy(
+        update={
+            "revision_parent_proposal_ref": parent_ref,
+            "revision_review_artifact_refs": (review_ref,),
+        }
+    )
+
+    result = asyncio.run(
+        service.run(
+            request=request,
+            model_request=_model_request,
+            world=world,
+            text_root=text_root,
+        )
+    )
+
+    assert result.terminal is PlanningLoopTerminal.PLAN_CANDIDATE_READY
+    assert planner.plan_calls == 1
+    assert planner.turn_calls == 2
+    assert memory.calls == 0
+    plan_source_payload = cast(str, planner.plan_requests[0]["source_payload"])
+    assert "author revision authority" not in plan_source_payload
+    assert "<CONTROLLED_REVISION_EVIDENCE" in plan_source_payload
+    assert "owner_ids_semantics" in plan_source_payload
+    assert "continuing narrative subject" in plan_source_payload
+    assert "Do not diversify owner_ids for variety" in plan_source_payload
+    assert world.entities[0].entity_id.root in plan_source_payload
+    assert world.entities[0].internal_label in plan_source_payload
+    trusted_context = cast(
+        tuple[ArtifactRef, ...], planner.plan_requests[0]["trusted_context_artifacts"]
+    )
+    evidence_refs = tuple(
+        ref
+        for ref in trusted_context
+        if ref.media_type == "application/vnd.novel-agent.controlled-revision-evidence+json"
+    )
+    assert len(evidence_refs) == 1
+    evidence_payload = artifacts.read_verified(evidence_refs[0]).decode("utf-8")
+    assert parent.proposal_id.root in evidence_payload
+    assert world.source_commit.root in evidence_payload
+    assert reviewer_trusted_sources
+    assert evidence_refs[0] in reviewer_trusted_sources[0]
+    events = [
+        artifacts.read_verified(ref).decode("utf-8")
+        for ref in result.event_artifacts
+        if ref.media_type == "application/vnd.novel-agent.planning-loop-event+json"
+    ]
+    assert any("controlled_revision.evidence_projected" in event for event in events)
+    assert any("memory.skipped_controlled_revision" in event for event in events)
 
 
 def test_loop_rehydrates_json_arrays_into_strict_domain_tuples(tmp_path: Path) -> None:
