@@ -9,7 +9,7 @@ from pathlib import Path
 from sqlalchemy.engine import URL
 
 from novel_agent.adapters.postgres.database import build_engine, build_session_factory
-from novel_agent.domain.creative_runtime import CreativeRunRequest
+from novel_agent.domain.creative_runtime import CreativeRunPolicy, CreativeRunRequest
 from novel_agent.domain.ids import RunId
 from novel_agent.domain.runtime import TaskKind
 from novel_agent.domain.world import PlanLevel
@@ -49,6 +49,7 @@ def main() -> int:
         choices=["draft_candidate", "plan_candidate"],
         default="draft_candidate",
     )
+    parser.add_argument("--policy", type=Path)
     parser.add_argument("--output", type=Path, required=True)
     args = parser.parse_args()
     database_url = args.database_url
@@ -75,6 +76,11 @@ def main() -> int:
         else TaskKind.PLAN_CANDIDATE
     )
     plan_level = None if initial_kind is TaskKind.DRAFT_CANDIDATE else PlanLevel.CHAPTER_SET
+    policy = (
+        CreativeRunPolicy.model_validate_json(args.policy.read_bytes())
+        if args.policy is not None
+        else source.policy
+    )
     continuation = source.model_copy(
         update={
             "run_id": RunId(args.run_id),
@@ -84,6 +90,7 @@ def main() -> int:
             "continuation_artifact_refs": (),
             "plan_level": plan_level,
             "initial_task_kind": initial_kind,
+            "policy": policy,
         }
     )
     args.output.parent.mkdir(parents=True, exist_ok=True)
