@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+from dataclasses import dataclass
 from datetime import datetime
 from enum import StrEnum
 
@@ -133,6 +134,118 @@ def obligation_in_scope_for_chapter(obligation: PlanObligation, chapter_index: i
     if obligation.due_chapter is not None:
         return chapter_index <= obligation.due_chapter
     return True
+
+
+class ObligationHistoryNeedKind(StrEnum):
+    """Whether this chapter must retrieve history for one obligation action."""
+
+    MANDATORY = "mandatory"
+    OPTIONAL = "optional"
+    NONE = "none"
+
+
+class ObligationHistoryNeedReason(StrEnum):
+    FIRST_CHAPTER = "first_chapter"
+    NO_COMMITTED_HISTORY = "no_committed_history"
+    FUTURE_PLAN = "future_plan"
+    ACTION_DEPENDS_ON_PRIOR_FACTS = "action_depends_on_prior_facts"
+    SETUP_WITHOUT_PRIOR_HISTORY = "setup_without_prior_history"
+    SETUP_AUXILIARY_RECALL = "setup_auxiliary_recall"
+
+
+@dataclass(frozen=True, slots=True)
+class ObligationHistoryNeedClassification:
+    kind: ObligationHistoryNeedKind
+    reason_code: ObligationHistoryNeedReason
+
+
+_SETUP_ACTIONS = frozenset({"SETUP"})
+_PROGRESS_ACTIONS = frozenset({"PROGRESS"})
+_PAYOFF_ACTIONS = frozenset({"RESOLVE", "PAYOFF"})
+
+
+def setup_min_distinct_history_chapters(target_chapter: int) -> int:
+    """SETUP may ask for two history chapters only when two prior chapters exist."""
+
+    return min(2, max(1, target_chapter - 1))
+
+
+def _obligation_has_prior_chapter_facts(obligation: PlanObligation) -> bool:
+    """True when Canon already recorded this obligation in earlier chapter prose."""
+
+    if obligation.status is ObligationStatus.PROGRESSED:
+        return True
+    return any(ref.chapter_id is not None for ref in obligation.evidence_refs)
+
+
+def classify_obligation_history_need(
+    *,
+    obligation: PlanObligation,
+    action: str,
+    target_chapter: int,
+    committed_frontier: int,
+    prior_prose_facts: bool,
+) -> ObligationHistoryNeedClassification:
+    """Classify history retrieval for one chapter obligation action.
+
+    This is not ``bool(evidence_refs)``.  Chapter execution (must this action
+    happen) and historical recall (is there prior prose to retrieve) are
+    separate questions.  Baseline setting refs without a chapter identity do
+    not make retrieval mandatory.
+    """
+
+    normalized = action.strip().upper()
+    if target_chapter <= 1:
+        return ObligationHistoryNeedClassification(
+            kind=ObligationHistoryNeedKind.NONE,
+            reason_code=ObligationHistoryNeedReason.FIRST_CHAPTER,
+        )
+    if committed_frontier < 1 or not prior_prose_facts:
+        return ObligationHistoryNeedClassification(
+            kind=ObligationHistoryNeedKind.NONE,
+            reason_code=ObligationHistoryNeedReason.NO_COMMITTED_HISTORY,
+        )
+
+    future_plan = obligation.is_future_locked(target_chapter) or (
+        obligation.target_chapter_start is not None
+        and obligation.target_chapter_start > target_chapter
+    )
+    prior_obligation_facts = _obligation_has_prior_chapter_facts(obligation)
+
+    if normalized in _SETUP_ACTIONS:
+        if prior_obligation_facts:
+            return ObligationHistoryNeedClassification(
+                kind=ObligationHistoryNeedKind.MANDATORY,
+                reason_code=ObligationHistoryNeedReason.ACTION_DEPENDS_ON_PRIOR_FACTS,
+            )
+        if future_plan:
+            return ObligationHistoryNeedClassification(
+                kind=ObligationHistoryNeedKind.NONE,
+                reason_code=ObligationHistoryNeedReason.FUTURE_PLAN,
+            )
+        return ObligationHistoryNeedClassification(
+            kind=ObligationHistoryNeedKind.OPTIONAL,
+            reason_code=ObligationHistoryNeedReason.SETUP_AUXILIARY_RECALL,
+        )
+    if normalized in _PROGRESS_ACTIONS or normalized in _PAYOFF_ACTIONS:
+        if prior_obligation_facts or prior_prose_facts:
+            return ObligationHistoryNeedClassification(
+                kind=ObligationHistoryNeedKind.MANDATORY,
+                reason_code=ObligationHistoryNeedReason.ACTION_DEPENDS_ON_PRIOR_FACTS,
+            )
+        return ObligationHistoryNeedClassification(
+            kind=ObligationHistoryNeedKind.NONE,
+            reason_code=ObligationHistoryNeedReason.NO_COMMITTED_HISTORY,
+        )
+    if future_plan:
+        return ObligationHistoryNeedClassification(
+            kind=ObligationHistoryNeedKind.NONE,
+            reason_code=ObligationHistoryNeedReason.FUTURE_PLAN,
+        )
+    return ObligationHistoryNeedClassification(
+        kind=ObligationHistoryNeedKind.NONE,
+        reason_code=ObligationHistoryNeedReason.SETUP_WITHOUT_PRIOR_HISTORY,
+    )
 
 
 def long_range_kind_requires_not_before(kind: ObligationKind) -> bool:
@@ -542,6 +655,26 @@ class Stage1MemoryNeed(DomainModel):
             ):
                 raise ValueError("plan-derived NeedFacet requires claim_may_cite_plan")
         return self
+
+
+class SemanticQuestionContractError(ValueError):
+    """A Need reached a semantic consumer without a business question."""
+
+
+def effective_semantic_question(need: Stage1MemoryNeed) -> str:
+    """Return the business question Judge, retrieval, and audit must share.
+
+    Need ids such as ``production`` / ``history`` / ``plan`` are tracking
+    identifiers, never the fact question.  An empty triple is a contract
+    error, not a prompt to the model.
+    """
+
+    for raw in (need.semantic_question, need.query_text, need.purpose):
+        if isinstance(raw, str) and raw.strip():
+            return raw.strip()
+    raise SemanticQuestionContractError(
+        f"Need {need.need_id.root} has no semantic_question, query_text, or purpose"
+    )
 
 
 class HorizonNeedSet(DomainModel):

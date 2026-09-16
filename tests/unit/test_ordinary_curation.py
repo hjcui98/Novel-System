@@ -12,6 +12,7 @@ import json
 
 import pytest
 
+from novel_agent.adapters.model.openai_chat import OpenAIChatOutputLengthError
 from novel_agent.domain.benchmark import (
     ChapterDocument,
     SceneDocument,
@@ -33,8 +34,12 @@ from novel_agent.domain.memory import (
     PlanObligation,
     WorldRootDocument,
 )
+from novel_agent.domain.model_calls import BudgetSource, EffectiveBudgetResult
 from novel_agent.domain.world import Entity, TruthClass
-from novel_agent.services.model_gateway import ModelOutputBudgetExhausted
+from novel_agent.services.model_gateway import (
+    ModelCallCumulativeBudgetExceeded,
+    ModelOutputBudgetExhausted,
+)
 from novel_agent.services.ordinary_curation import (
     OrdinaryCurationIncomplete,
     _bill_page_attempts,
@@ -188,7 +193,14 @@ def _draft(
     )
 
 
-def _extract(gateway, *, page_quota=None, cumulative_token_budget=None, planned=()):
+def _extract(
+    gateway,
+    *,
+    page_quota=None,
+    cumulative_token_budget=None,
+    cumulative_token_budgets=None,
+    planned=(),
+):
     return extract_source_batches(
         gateway,
         _enveloped_request(),
@@ -197,6 +209,7 @@ def _extract(gateway, *, page_quota=None, cumulative_token_budget=None, planned=
         planned,
         base_commit=COMMIT,
         cumulative_token_budget=cumulative_token_budget,
+        cumulative_token_budgets=cumulative_token_budgets,
         cumulative_tokens_used=0,
         page_quota=page_quota,
     )
@@ -642,3 +655,151 @@ def test_a_fresh_obligation_observation_is_progress() -> None:
         "obligation.test.0",
         "obligation.test.1",
     }
+
+
+def _effective_budget(*, output_tokens: int, input_tokens: int = 100) -> EffectiveBudgetResult:
+    return EffectiveBudgetResult(
+        budget_source=BudgetSource.EXPLICIT_REQUEST,
+        context_limit=200_000,
+        estimated_input_tokens=input_tokens,
+        body_output_budget=output_tokens,
+        thinking_budget=0,
+        total_output_budget=output_tokens,
+        safety_allowance_tokens=0,
+        reserved_sequence_tokens=input_tokens + output_tokens,
+        available_input_tokens=200_000 - output_tokens,
+    )
+
+
+class _BudgetGateway(_PageGateway):
+    def __init__(
+        self,
+        pages: list[CuratorV2EvidenceDraft],
+        *,
+        page_tokens: tuple[int, int] = (1, 1),
+    ):
+        super().__init__(pages)
+        self.page_tokens = page_tokens
+        self.preflights: list[tuple[str, int, int]] = []
+        self.elastic_preflights: list[tuple[str, tuple[int, ...], int]] = []
+
+    async def generate_structured(self, request, model_type, **kwargs):
+        settled = self._answers.get(request.request_id.root)
+        if settled is not None:
+            return settled
+        self.requests.append(request)
+        page = self._pages[min(self._served, len(self._pages) - 1)]
+        self._served += 1
+        call = _call(
+            request.request_id,
+            input_tokens=self.page_tokens[0],
+            output_tokens=self.page_tokens[1],
+        )
+        self.call_ledger.entries.append(_PageLedgerEntry(request.request_id, call))
+        self._answers[request.request_id.root] = (page, call)
+        return page, call
+
+    def preflight_cumulative_token_budget(self, request, *, token_budget, tokens_used=0):
+        estimated_input = 100
+        reserved_output = request.max_output_tokens or 8_192
+        self.preflights.append((request.request_id.root, token_budget, tokens_used))
+        if tokens_used + estimated_input + reserved_output > token_budget:
+            raise ModelCallCumulativeBudgetExceeded(
+                request_id=request.request_id.root,
+                token_budget=token_budget,
+                tokens_used=tokens_used,
+                estimated_input_tokens=estimated_input,
+                reserved_output_tokens=reserved_output,
+            )
+        return _effective_budget(output_tokens=reserved_output, input_tokens=estimated_input)
+
+    def preflight_elastic_cumulative_token_budget(self, request, *, token_budgets, tokens_used=0):
+        self.elastic_preflights.append((request.request_id.root, token_budgets, tokens_used))
+        last_error = None
+        for tier, token_budget in enumerate(token_budgets):
+            try:
+                budget = self.preflight_cumulative_token_budget(
+                    request, token_budget=token_budget, tokens_used=tokens_used
+                )
+            except ModelCallCumulativeBudgetExceeded as error:
+                last_error = error
+                continue
+            return (
+                budget.model_copy(
+                    update={"caller_token_budget": token_budget, "caller_budget_tier": tier}
+                ),
+                tier,
+            )
+        assert last_error is not None
+        raise last_error
+
+
+class _TruncatingBudgetGateway(_BudgetGateway):
+    async def generate_structured(self, request, model_type, **kwargs):
+        original = request.request_id.root
+        if ".compact" not in original and original not in self._answers:
+            self.requests.append(request)
+            call = _call(request.request_id, input_tokens=10, output_tokens=50)
+            self.call_ledger.entries.append(_PageLedgerEntry(request.request_id, call))
+            self._answers[original] = (self._pages[0], call)
+            raise OpenAIChatOutputLengthError("truncated")
+        return await super().generate_structured(request, model_type, **kwargs)
+
+
+def test_elastic_budget_uses_the_first_tier_then_counts_prior_pages() -> None:
+    pages = [
+        _draft(operations=(_operation("event.budget.1"),), has_more=True, coverage=0.5),
+        _draft(operations=(_operation("event.budget.2"),), has_more=False),
+    ]
+    gateway = _BudgetGateway(pages, page_tokens=(20_000, 5_000))
+    tiers = (24_000, 48_000, 96_000)
+
+    _draft_out, calls, receipts = asyncio.run(_extract(gateway, cumulative_token_budgets=tiers))
+
+    first_used = gateway.elastic_preflights[0][2]
+    second_used = gateway.elastic_preflights[1][2]
+    assert first_used == 0
+    assert second_used == 25_000
+    assert receipts[0].budget_source is BudgetSource.EXPLICIT_REQUEST
+    assert receipts[0].output_token_budget == 8_192
+    assert receipts[1].output_token_budget == 8_192
+    assert any(
+        token_budget == 24_000 and used == 0 for _id, token_budget, used in gateway.preflights
+    )
+    assert any(
+        token_budget == 48_000 and used == 25_000 for _id, token_budget, used in gateway.preflights
+    )
+    assert len(calls) == 2
+
+
+def test_legacy_single_cumulative_budget_path_still_binds_receipts() -> None:
+    gateway = _BudgetGateway([_draft(operations=(_operation("event.legacy"),), has_more=False)])
+    _draft_out, _calls, receipts = asyncio.run(_extract(gateway, cumulative_token_budget=24_000))
+    assert gateway.elastic_preflights == []
+    assert gateway.preflights[0][1:] == (24_000, 0)
+    assert receipts[0].budget_source is BudgetSource.EXPLICIT_REQUEST
+    assert receipts[0].output_token_budget == 8_192
+
+
+def test_compact_retry_bills_the_truncated_page_once_then_retries() -> None:
+    gateway = _TruncatingBudgetGateway(
+        [_draft(operations=(_operation("event.compact"),), has_more=False, coverage=1.0)]
+    )
+    _draft_out, calls, receipts = asyncio.run(
+        _extract(gateway, cumulative_token_budgets=(24_000, 48_000))
+    )
+    compact_preflights = [item for item in gateway.elastic_preflights if ".compact" in item[0]]
+    assert compact_preflights
+    assert compact_preflights[0][2] == 60
+    request_ids = [call.request_id.root for call in calls]
+    assert len(request_ids) == len(set(request_ids))
+    assert any(".compact" in item for item in request_ids)
+    assert receipts[0].budget_source is BudgetSource.EXPLICIT_REQUEST
+
+
+def test_elastic_budget_blocks_after_the_last_tier() -> None:
+    gateway = _BudgetGateway([_draft(operations=(_operation("event.blocked"),), has_more=False)])
+    with pytest.raises(ModelCallCumulativeBudgetExceeded) as raised:
+        asyncio.run(_extract(gateway, cumulative_token_budgets=(1_000, 2_000)))
+    assert raised.value.token_budget == 2_000
+    assert gateway.requests == []

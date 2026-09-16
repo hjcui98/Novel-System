@@ -16,6 +16,7 @@ from pydantic import Field, model_validator
 
 from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import StableId
+from novel_agent.domain.memory import effective_semantic_question
 from novel_agent.domain.model_calls import ModelCallPurpose, ModelRequest, ModelRole
 from novel_agent.domain.writer_context import (
     NeedEvidenceJudgmentBatchReceipt,
@@ -130,7 +131,7 @@ class NeedEvidenceSemanticResult:
 class NeedEvidenceSemanticJudge:
     """Judge all selected evidence using token-capacity-driven batches."""
 
-    version = "need_evidence_semantic_judge.v1"
+    version = "need_evidence_semantic_judge.v2"
 
     def __init__(
         self,
@@ -328,11 +329,12 @@ class NeedEvidenceSemanticJudge:
             ordered_slices = tuple((slice_id, by_id[slice_id].text) for slice_id in ordered_ids)
             # One facet per call. A two-facet Need with 18 live slices truncated
             # the structured JSON at 8000 tokens on frozen C95.
+            question = effective_semantic_question(need) if ordered_slices else ""
             for facet in facets:
                 works.append(
                     _WorkItem(
                         need_id=need.need_id,
-                        semantic_question=need.semantic_question,
+                        semantic_question=question,
                         facets=(facet,),
                         slices=ordered_slices,
                     )
@@ -506,6 +508,9 @@ class NeedEvidenceSemanticJudge:
             "supporting、partial、unsupported.",
             "SUPPORTED 表示至少一条原文直接回答该 facet; PARTIAL 表示只回答一部分;",
             "UNSUPPORTED 表示全部原文只是相关或没有回答。保留否定、不确定性和知情边界。",
+            "Tracking IDs are not facts to verify. Literals such as production, "
+            "history, or plan inside those IDs must be ignored. Judge only the "
+            "business question on the Need line against the slice text.",
             "输出单个 JSON 对象, 不要输出其它文字。",
             '{"decisions":[{"need_id":"...","need_facet_id":"...",'
             '"status":"SUPPORTED|PARTIAL|UNSUPPORTED",'
@@ -532,4 +537,5 @@ __all__ = [
     "NeedEvidenceSemanticResult",
     "SemanticFacetDecision",
     "SemanticJudgmentBatchOutput",
+    "effective_semantic_question",
 ]

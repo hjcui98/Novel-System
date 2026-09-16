@@ -32,12 +32,16 @@ from novel_agent.domain.memory import (
     NeedGapPolicy,
     NeedRisk,
     NeedUncertaintyPolicy,
+    ObligationHistoryNeedKind,
     ObligationStatus,
     RequirementLevel,
     ResolutionPath,
     Stage1MemoryNeed,
     Stage1QueryIntent,
     WorldRootDocument,
+    classify_obligation_history_need,
+    effective_semantic_question,
+    setup_min_distinct_history_chapters,
 )
 from novel_agent.domain.planning_memory import (
     GroundedNeedDraft,
@@ -114,13 +118,14 @@ class _HistoryNeedCandidate:
     source: str
     key: str
     why: str
+    mandatory: bool = True
 
 
 class TaskPlanConditionedNeedGenerator:
     """Generate needs from the bounded FocusSet, never by enumerating WorldRoot."""
 
     profile = "task_plan_conditioned_v1"
-    version = "task_plan_conditioned_need.v24"
+    version = "task_plan_conditioned_need.v25"
     completion_spec_version = "need_completion_spec.v1"
 
     _CAPABILITY_PREDICATE_KEYWORDS: ClassVar[tuple[str, ...]] = (
@@ -304,7 +309,14 @@ class TaskPlanConditionedNeedGenerator:
             for goal, decision in zip(goals, decisions, strict=False)
             for index, need in enumerate(decision.needs)
         )
-        host_candidates = self._host_derived_history_needs(goals, world, target_chapter)
+        committed_frontier = max(0, task.checkpoint_chapter)
+        host_candidates = self._host_derived_history_needs(
+            goals,
+            world,
+            target_chapter,
+            committed_frontier=committed_frontier,
+            prior_prose_facts=committed_frontier >= 1,
+        )
         first_chapter_waiver = (
             target_chapter == 1
             and requirement is HistoryRetrievalRequirement.NOT_REQUIRED
@@ -426,7 +438,7 @@ class TaskPlanConditionedNeedGenerator:
                 task=task,
                 focus=focus,
                 allow_plan=False,
-                mandatory=True,
+                mandatory=candidate.mandatory,
                 facet_kinds_override=(facet_kind,),
                 predicates_by_facet={facet_kind: tuple(dict.fromkeys(predicates))},
             )
@@ -449,8 +461,12 @@ class TaskPlanConditionedNeedGenerator:
                     claim_may_cite_plan=False,
                     legacy_allow_plan=False,
                     why_needed=candidate.why,
-                    risk_level=NeedRisk.HIGH,
-                    requirement=RequirementLevel.MANDATORY,
+                    risk_level=NeedRisk.HIGH if candidate.mandatory else NeedRisk.MEDIUM,
+                    requirement=(
+                        RequirementLevel.MANDATORY
+                        if candidate.mandatory
+                        else RequirementLevel.OPTIONAL
+                    ),
                     preferred_resolution_path=ResolutionPath.ANCHOR_FIRST,
                     allowed_candidate_pools=(CandidatePool.ANCHOR, CandidatePool.GROUNDED),
                     expected_evidence_types=("structured_record", "text_span"),
@@ -458,7 +474,7 @@ class TaskPlanConditionedNeedGenerator:
                     purpose=query,
                     expected_section=section_by_kind[kind],
                     focus_ids=(focus.focus_id,),
-                    priority=90,
+                    priority=90 if candidate.mandatory else 60,
                     query_hints=(query,),
                     completion_criteria="every declared history facet is served or typed as a gap",
                     need_facets=facets,
@@ -525,6 +541,9 @@ class TaskPlanConditionedNeedGenerator:
         goals: tuple[ChapterGoal, ...],
         world: WorldRootDocument,
         target_chapter: int,
+        *,
+        committed_frontier: int,
+        prior_prose_facts: bool,
     ) -> tuple[_HistoryNeedCandidate, ...]:
         candidates: list[_HistoryNeedCandidate] = []
         obligations = {item.obligation_id: item for item in world.obligations}
@@ -551,23 +570,40 @@ class TaskPlanConditionedNeedGenerator:
                     ObligationStatus.ABANDONED,
                 }:
                     continue
+                classification = classify_obligation_history_need(
+                    obligation=obligation,
+                    action=operation,
+                    target_chapter=target_chapter,
+                    committed_frontier=committed_frontier,
+                    prior_prose_facts=prior_prose_facts,
+                )
+                if classification.kind is ObligationHistoryNeedKind.NONE:
+                    continue
+                query = (
+                    f"本章需对长程责任「{obligation.description}」执行 "
+                    f"{operation}. 请召回此前 SETUP/PROGRESS 阶段的既有证据、"
+                    "当前状态与已知边界。"
+                )
                 candidates.append(
                     _HistoryNeedCandidate(
                         need=HistoryRetrievalNeed(
                             kind="setup_evidence",
-                            query=(
-                                f"本章需对长程责任「{obligation.description}」执行 "
-                                f"{operation}. 请召回此前 SETUP/PROGRESS 阶段的既有证据、"
-                                "当前状态与已知边界。"
-                            ),
+                            query=query,
                             predicates=("setup", "progress"),
                             why_needed=(
                                 "host-derived obligation evidence required before this chapter"
                             ),
+                            source_chapter_end=(
+                                committed_frontier if committed_frontier >= 1 else None
+                            ),
                         ),
                         source="host_obligation",
                         key=f"obligation.{obligation_id.root}",
-                        why="host-derived obligation setup evidence",
+                        why=(
+                            "host-derived obligation history "
+                            f"{classification.kind.value}:{classification.reason_code.value}"
+                        ),
+                        mandatory=classification.kind is ObligationHistoryNeedKind.MANDATORY,
                     )
                 )
             for entity in self._participating_entities(goal, world):
@@ -2519,7 +2555,7 @@ class TaskPlanConditionedNeedGenerator:
         provisional = tuple(
             need.model_copy(
                 update={
-                    "semantic_question": need.semantic_question or need.query_text,
+                    "semantic_question": effective_semantic_question(need),
                     "planned_draft_id": source_id,
                 }
             )
@@ -3018,13 +3054,18 @@ class TaskPlanConditionedNeedGenerator:
             for facet in facets
         }
         facet_ids = tuple(item.need_facet_id for item in facets)
+        min_chapters = (
+            setup_min_distinct_history_chapters(task.target_chapter_start)
+            if NeedFacetKind.SETUP in facet_kinds
+            else 1
+        )
+        available_history = max(0, task.checkpoint_chapter)
         return facets, NeedCompletionSpec(
             need_id=need_id,
             required_need_facet_ids=facet_ids,
             irreducible_need_facet_ids=(facet_ids if mandatory or len(facet_ids) > 1 else ()),
             evidence_requirement_by_facet=evidence_requirements,
-            min_distinct_evidence_sources=1,
-            min_distinct_chapters=(2 if NeedFacetKind.SETUP in facet_kinds else 1),
+            min_distinct_chapters=min_chapters,
             # Evidence-first default: completion is served by cutoff-safe exact
             # evidence slices or an explicit typed gap.  No active "one current
             # claim" gate; CURRENT_CLAIM remains an explicit opt-in for legacy
@@ -3032,7 +3073,11 @@ class TaskPlanConditionedNeedGenerator:
             require_current_claim=False,
             require_causal_history=NeedFacetKind.CAUSAL_HISTORY in facet_kinds,
             uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
-            gap_policy=NeedGapPolicy.FAIL_MANDATORY,
+            gap_policy=(
+                NeedGapPolicy.EMIT_TYPED_GAP
+                if available_history < min_chapters
+                else NeedGapPolicy.FAIL_MANDATORY
+            ),
             producer="TaskPlanConditionedNeedGenerator",
             producer_version=cls.version,
             # Facet-level predicate binding: each facet declares only the

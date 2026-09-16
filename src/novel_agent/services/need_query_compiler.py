@@ -2,7 +2,11 @@
 
 from __future__ import annotations
 
-from novel_agent.domain.memory import RetrievalChannel, Stage1MemoryNeed
+from novel_agent.domain.memory import (
+    RetrievalChannel,
+    Stage1MemoryNeed,
+    effective_semantic_question,
+)
 from novel_agent.domain.planning_memory import RetrievalQueryBundle
 
 
@@ -19,7 +23,7 @@ class NeedQueryCompiler:
     version = "need_query_compiler.v2"
 
     def compile(self, need: Stage1MemoryNeed) -> RetrievalQueryBundle:
-        semantic_query = need.semantic_question or need.query_text
+        semantic_query = effective_semantic_question(need)
         lexical_queries = tuple(
             dict.fromkeys(query for query in (need.query_text, *need.query_hints) if query.strip())
         ) or (need.query_text,)

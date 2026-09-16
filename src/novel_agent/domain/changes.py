@@ -19,6 +19,7 @@ from novel_agent.domain.ids import (
     SchemaVersion,
     StableId,
 )
+from novel_agent.domain.model_calls import BudgetSource
 from novel_agent.domain.text import EvidenceRef, TextSpanRef
 from novel_agent.domain.world import NarrativeOrder, TruthClass
 
@@ -332,6 +333,8 @@ class OrdinaryCurationPageReceipt(DomainModel):
     has_more: bool
     covered: bool
     lookup_terms: tuple[str, ...] = ()
+    budget_source: BudgetSource | None = None
+    output_token_budget: int | None = Field(default=None, ge=1)
 
 
 class CuratorV2EvidenceDraft(DomainModel):

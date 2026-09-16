@@ -13,6 +13,7 @@ from sqlalchemy.orm import Session, sessionmaker
 
 from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.adapters.postgres.models import ModelCallLedgerRow, RuntimeTaskAttemptRow
+from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
     AutomationMode,
@@ -800,7 +801,7 @@ def test_unknown_failure_settlement_fails_closed_to_recovery_pending(
 def test_create_run_and_initial_task_supports_draft_candidate_continuation(
     kernel: tuple[sessionmaker[Session], RuntimeCommandService, CommitId],
 ) -> None:
-    _factory, commands, base = kernel
+    factory, commands, base = kernel
     draft_request = _request("run.draft-continuation", base).model_copy(
         update={
             "initial_task_kind": TaskKind.DRAFT_CANDIDATE,
@@ -818,6 +819,10 @@ def test_create_run_and_initial_task_supports_draft_candidate_continuation(
     assert task.horizon_end == 5
     assert task.dependency_task_ids == ()
     assert task.status is TaskStatus.READY
+    tasks = RuntimeTaskQueryRepository(factory).list_run(draft_request.run_id)
+    assert tuple(item.kind for item in tasks) == (TaskKind.DRAFT_CANDIDATE,)
+    assert tasks[0].chapter_index == 1
+    assert all(item.kind is not TaskKind.PLAN_CANDIDATE for item in tasks)
 
     # Idempotency check:
     assert commands.create_run_and_initial_task(draft_request) == task

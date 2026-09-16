@@ -25,6 +25,7 @@ from novel_agent.domain.memory import (
     NeedFacet,
     RequirementLevel,
     Stage1MemoryNeed,
+    effective_semantic_question,
 )
 from novel_agent.domain.retrieval_decision import (
     HistoryRetrievalRequirement,
@@ -1197,7 +1198,7 @@ class EvidenceFirstWriterContextAssembler:
 
     @classmethod
     def _purpose(cls, need: Stage1MemoryNeed) -> str:
-        question = need.semantic_question or need.query_text
+        question = effective_semantic_question(need)
         if need.why_needed:
             return f"{question}({need.why_needed})"
         return question

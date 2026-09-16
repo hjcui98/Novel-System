@@ -724,6 +724,7 @@ class ModelCurator:
                 planned_obligations,
                 base_commit=base_commit,
                 cumulative_token_budget=cumulative_token_budget,
+                cumulative_token_budgets=cumulative_token_budgets,
                 cumulative_tokens_used=cumulative_tokens_used,
                 page_quota=self._max_pages_per_ordinary_batch,
             )

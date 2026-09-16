@@ -193,8 +193,9 @@ async def extract_source_batches(
     planned: tuple[PlanObligation, ...],
     *,
     base_commit: CommitId,
-    cumulative_token_budget: int | None,
-    cumulative_tokens_used: int,
+    cumulative_token_budget: int | None = None,
+    cumulative_token_budgets: tuple[int, ...] | None = None,
+    cumulative_tokens_used: int = 0,
     page_quota: int | None = None,
 ) -> tuple[
     CuratorV2EvidenceDraft, tuple[ModelCallRecord, ...], tuple[OrdinaryCurationPageReceipt, ...]
@@ -329,12 +330,31 @@ async def extract_source_batches(
                     "trace_id": f"{request.trace_id}:ordinary:{batch_index}:{page}",
                 }
             )
-            if cumulative_token_budget is not None:
-                gateway.preflight_cumulative_token_budget(
+            if cumulative_token_budgets is not None:
+                budget, _tier = gateway.preflight_elastic_cumulative_token_budget(
+                    current,
+                    token_budgets=cumulative_token_budgets,
+                    tokens_used=used,
+                )
+                current = current.model_copy(
+                    update={
+                        "max_output_tokens": budget.total_output_budget,
+                        "budget_source": budget.budget_source,
+                    }
+                )
+            elif cumulative_token_budget is not None:
+                budget = gateway.preflight_cumulative_token_budget(
                     current,
                     token_budget=cumulative_token_budget,
                     tokens_used=used,
                 )
+                current = current.model_copy(
+                    update={
+                        "max_output_tokens": budget.total_output_budget,
+                        "budget_source": budget.budget_source,
+                    }
+                )
+            bound = current
             try:
                 draft, call = await gateway.generate_structured(current, CuratorV2EvidenceDraft)
             except (OpenAIChatOutputLengthError, ModelOutputBudgetExhausted):
@@ -358,12 +378,31 @@ async def extract_source_batches(
                         "</COMPACT_OUTPUT_RETRY>",
                     }
                 )
-                if cumulative_token_budget is not None:
-                    gateway.preflight_cumulative_token_budget(
+                if cumulative_token_budgets is not None:
+                    budget, _tier = gateway.preflight_elastic_cumulative_token_budget(
+                        compact,
+                        token_budgets=cumulative_token_budgets,
+                        tokens_used=used,
+                    )
+                    compact = compact.model_copy(
+                        update={
+                            "max_output_tokens": budget.total_output_budget,
+                            "budget_source": budget.budget_source,
+                        }
+                    )
+                elif cumulative_token_budget is not None:
+                    budget = gateway.preflight_cumulative_token_budget(
                         compact,
                         token_budget=cumulative_token_budget,
                         tokens_used=used,
                     )
+                    compact = compact.model_copy(
+                        update={
+                            "max_output_tokens": budget.total_output_budget,
+                            "budget_source": budget.budget_source,
+                        }
+                    )
+                bound = compact
                 draft, call = await gateway.generate_structured(
                     compact, CuratorV2EvidenceDraft, json_object_framing=True
                 )
@@ -449,6 +488,8 @@ async def extract_source_batches(
                     has_more=more,
                     covered=covered,
                     lookup_terms=draft.world_lookup_terms,
+                    budget_source=bound.budget_source,
+                    output_token_budget=bound.max_output_tokens,
                 )
             )
             unresolved.extend(draft.unresolved)

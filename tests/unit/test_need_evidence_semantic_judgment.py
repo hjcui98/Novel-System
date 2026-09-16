@@ -17,6 +17,8 @@ from novel_agent.domain.memory import (
     NeedFacetKind,
     NeedGapPolicy,
     NeedUncertaintyPolicy,
+    SemanticQuestionContractError,
+    effective_semantic_question,
 )
 from novel_agent.domain.model_calls import (
     ModelCallPurpose,
@@ -90,8 +92,13 @@ class _JudgeEndpoint:
         )
 
 
-def _selection(slice_count: int = 7) -> NeedEvidenceSelection:
-    need = _need("need.semantic", query="teacher 当前伤势状态是什么?")
+def _selection(
+    slice_count: int = 7,
+    *,
+    need_id: str = "need.semantic",
+    query: str = "teacher 当前伤势状态是什么?",
+) -> NeedEvidenceSelection:
+    need = _need(need_id, query=query)
     facet_id = StableId("facet.semantic.current")
     facet = NeedFacet(
         need_facet_id=facet_id,
@@ -414,6 +421,51 @@ def test_judge_can_run_on_the_implementation_endpoint() -> None:
     request_id = endpoint.requests[0].request_id.root
     assert f".{endpoint.requests[0].run_id.root}." in request_id
     assert f".{endpoint.requests[0].task_id.root}." in request_id
+
+
+def test_judge_prompt_uses_the_business_question_not_need_id_literals() -> None:
+    endpoint = _JudgeEndpoint("supported")
+    selection = _selection(
+        2,
+        need_id="need.production.history.plan.tower",
+        query="林澈左臂伤势当前限制了哪些动作?",
+    )
+    need = selection.need.model_copy(
+        update={
+            "semantic_question": "",
+            "purpose": "production/history/plan",
+            "planner_artifact_ref": None,
+            "planned_draft_id": None,
+            "validated_need_set_hash": None,
+        }
+    )
+    selection = selection.model_copy(update={"need": need})
+    _judge(endpoint).judge((selection,))
+    prompt = endpoint.requests[0].prompt
+    assert "林澈左臂伤势当前限制了哪些动作?" in prompt
+    question_line = next(line for line in prompt.splitlines() if line.startswith("Need "))
+    assert "林澈左臂伤势当前限制了哪些动作?" in question_line.split(":", 1)[1]
+    assert question_line.split(":", 1)[1].strip() != "production/history/plan"
+    assert effective_semantic_question(need) == "林澈左臂伤势当前限制了哪些动作?"
+
+
+def test_judge_fails_closed_before_a_model_call_when_the_question_is_empty() -> None:
+    endpoint = _JudgeEndpoint("supported")
+    selection = _selection(2)
+    empty = selection.need.model_copy(
+        update={
+            "semantic_question": "",
+            "query_text": "   ",
+            "purpose": None,
+            "planner_artifact_ref": None,
+            "planned_draft_id": None,
+            "validated_need_set_hash": None,
+        }
+    )
+    broken = selection.model_copy(update={"need": empty})
+    with pytest.raises(SemanticQuestionContractError, match="no semantic_question"):
+        _judge(endpoint).judge((broken,))
+    assert endpoint.requests == []
 
 
 def test_batch_purpose_cannot_be_routed_to_the_implementation_role() -> None:
