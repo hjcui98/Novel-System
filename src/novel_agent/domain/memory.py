@@ -151,6 +151,8 @@ class ObligationHistoryNeedReason(StrEnum):
     ACTION_DEPENDS_ON_PRIOR_FACTS = "action_depends_on_prior_facts"
     SETUP_WITHOUT_PRIOR_HISTORY = "setup_without_prior_history"
     SETUP_AUXILIARY_RECALL = "setup_auxiliary_recall"
+    PROGRESS_AUXILIARY_RECALL = "progress_auxiliary_recall"
+    PAYOFF_AUXILIARY_RECALL = "payoff_auxiliary_recall"
 
 
 @dataclass(frozen=True, slots=True)
@@ -191,7 +193,8 @@ def classify_obligation_history_need(
     This is not ``bool(evidence_refs)``.  Chapter execution (must this action
     happen) and historical recall (is there prior prose to retrieve) are
     separate questions.  Baseline setting refs without a chapter identity do
-    not make retrieval mandatory.
+    not make retrieval mandatory.  Prior prose alone only permits a non-blocking
+    auxiliary recall; it does not prove that this obligation has prior facts.
     """
 
     normalized = action.strip().upper()
@@ -228,19 +231,30 @@ def classify_obligation_history_need(
             reason_code=ObligationHistoryNeedReason.SETUP_AUXILIARY_RECALL,
         )
     if normalized in _PROGRESS_ACTIONS or normalized in _PAYOFF_ACTIONS:
-        if prior_obligation_facts or prior_prose_facts:
+        # A future lock prevents payoff/resolution, not setup or progress.  A
+        # PROGRESS action may still carry the obligation toward that boundary.
+        if normalized in _PAYOFF_ACTIONS and future_plan:
+            return ObligationHistoryNeedClassification(
+                kind=ObligationHistoryNeedKind.NONE,
+                reason_code=ObligationHistoryNeedReason.FUTURE_PLAN,
+            )
+        if prior_obligation_facts:
             return ObligationHistoryNeedClassification(
                 kind=ObligationHistoryNeedKind.MANDATORY,
                 reason_code=ObligationHistoryNeedReason.ACTION_DEPENDS_ON_PRIOR_FACTS,
             )
+        if prior_prose_facts:
+            return ObligationHistoryNeedClassification(
+                kind=ObligationHistoryNeedKind.OPTIONAL,
+                reason_code=(
+                    ObligationHistoryNeedReason.PROGRESS_AUXILIARY_RECALL
+                    if normalized in _PROGRESS_ACTIONS
+                    else ObligationHistoryNeedReason.PAYOFF_AUXILIARY_RECALL
+                ),
+            )
         return ObligationHistoryNeedClassification(
             kind=ObligationHistoryNeedKind.NONE,
             reason_code=ObligationHistoryNeedReason.NO_COMMITTED_HISTORY,
-        )
-    if future_plan:
-        return ObligationHistoryNeedClassification(
-            kind=ObligationHistoryNeedKind.NONE,
-            reason_code=ObligationHistoryNeedReason.FUTURE_PLAN,
         )
     return ObligationHistoryNeedClassification(
         kind=ObligationHistoryNeedKind.NONE,

@@ -78,7 +78,7 @@ def _baseline_evidence_obligation() -> PlanObligation:
     )
 
 
-def test_classifier_does_not_treat_evidence_refs_as_the_mandatory_bit() -> None:
+def test_classifier_requires_obligation_facts_for_mandatory_progress_retrieval() -> None:
     open_obligation = _obligation()
     progressed = _obligation(status=ObligationStatus.PROGRESSED)
     chapter_bound = _obligation(evidence_chapter=True)
@@ -92,7 +92,7 @@ def test_classifier_does_not_treat_evidence_refs_as_the_mandatory_bit() -> None:
             committed_frontier=1,
             prior_prose_facts=True,
         ).kind
-        is ObligationHistoryNeedKind.MANDATORY
+        is ObligationHistoryNeedKind.OPTIONAL
     )
     assert (
         classify_obligation_history_need(
@@ -102,7 +102,7 @@ def test_classifier_does_not_treat_evidence_refs_as_the_mandatory_bit() -> None:
             committed_frontier=1,
             prior_prose_facts=True,
         ).reason_code
-        is ObligationHistoryNeedReason.ACTION_DEPENDS_ON_PRIOR_FACTS
+        is ObligationHistoryNeedReason.PROGRESS_AUXILIARY_RECALL
     )
     assert (
         classify_obligation_history_need(
@@ -134,6 +134,36 @@ def test_classifier_does_not_treat_evidence_refs_as_the_mandatory_bit() -> None:
         ).kind
         is ObligationHistoryNeedKind.MANDATORY
     )
+    assert (
+        classify_obligation_history_need(
+            obligation=progressed,
+            action="PROGRESS",
+            target_chapter=2,
+            committed_frontier=1,
+            prior_prose_facts=True,
+        ).kind
+        is ObligationHistoryNeedKind.MANDATORY
+    )
+    assert (
+        classify_obligation_history_need(
+            obligation=baseline,
+            action="PROGRESS",
+            target_chapter=2,
+            committed_frontier=1,
+            prior_prose_facts=True,
+        ).kind
+        is ObligationHistoryNeedKind.OPTIONAL
+    )
+    assert (
+        classify_obligation_history_need(
+            obligation=open_obligation,
+            action="PAYOFF",
+            target_chapter=2,
+            committed_frontier=1,
+            prior_prose_facts=True,
+        ).reason_code
+        is ObligationHistoryNeedReason.PAYOFF_AUXILIARY_RECALL
+    )
 
 
 def test_classifier_returns_none_without_committed_history_or_on_future_plans() -> None:
@@ -163,6 +193,26 @@ def test_classifier_returns_none_without_committed_history_or_on_future_plans() 
         classify_obligation_history_need(
             obligation=future,
             action="SETUP",
+            target_chapter=21,
+            committed_frontier=20,
+            prior_prose_facts=True,
+        ).reason_code
+        is ObligationHistoryNeedReason.FUTURE_PLAN
+    )
+    assert (
+        classify_obligation_history_need(
+            obligation=future,
+            action="PROGRESS",
+            target_chapter=21,
+            committed_frontier=20,
+            prior_prose_facts=True,
+        ).reason_code
+        is ObligationHistoryNeedReason.PROGRESS_AUXILIARY_RECALL
+    )
+    assert (
+        classify_obligation_history_need(
+            obligation=future,
+            action="PAYOFF",
             target_chapter=21,
             committed_frontier=20,
             prior_prose_facts=True,
@@ -342,8 +392,11 @@ def test_host_need_source_chapter_end_precedes_the_target() -> None:
         None,
     )
     assert result.needs
-    assert result.needs[0].requirement is RequirementLevel.MANDATORY
+    assert result.needs[0].requirement is RequirementLevel.OPTIONAL
     assert "进入北塔" in result.needs[0].query_text
+    assert "progress_auxiliary_recall" in result.needs[0].why_needed
+    assert result.needs[0].completion_spec is not None
+    assert result.needs[0].completion_spec.min_distinct_chapters == 1
 
 
 def test_baseline_evidence_refs_do_not_force_mandatory_setup_retrieval() -> None:

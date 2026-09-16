@@ -592,6 +592,8 @@ class TaskPlanConditionedNeedGenerator:
                             predicates=("setup", "progress"),
                             why_needed=(
                                 "host-derived obligation evidence required before this chapter"
+                                if classification.kind is ObligationHistoryNeedKind.MANDATORY
+                                else "host-derived obligation history context before this chapter"
                             ),
                             source_chapter_end=(
                                 committed_frontier if committed_frontier >= 1 else None
