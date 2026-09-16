@@ -196,6 +196,7 @@ def _canonical(
                         "kind": "causal_history",
                         "query": "what happened before the tower approach",
                         "why_needed": "continuity",
+                        "source_chapter_end": 20,
                     }
                 ],
             }

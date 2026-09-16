@@ -104,11 +104,18 @@ class CreativeRunRequest(DomainModel):
     current_chapter: int = Field(default=0, ge=0, le=9999)
     target_chapters: int = Field(default=1, ge=1, le=10000)
     plan_level: PlanLevel | None = None
+    initial_task_kind: TaskKind = TaskKind.PLAN_CANDIDATE
 
     @model_validator(mode="after")
     def validate_chapter_range(self) -> CreativeRunRequest:
         if self.target_chapters <= self.current_chapter:
             raise ValueError("creative run target chapter must follow the current chapter")
+        if self.initial_task_kind not in {TaskKind.PLAN_CANDIDATE, TaskKind.DRAFT_CANDIDATE}:
+            raise ValueError(
+                "creative run initial task kind must be plan_candidate or draft_candidate"
+            )
+        if self.initial_task_kind is TaskKind.DRAFT_CANDIDATE and self.plan_level is not None:
+            raise ValueError("draft continuation cannot declare an initial planning level")
         return self
 
 
@@ -161,9 +168,7 @@ RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE = (
 )
 
 OPERATOR_PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.operator-plan-review+json"
-DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE = (
-    "application/vnd.novel-agent.draft-revision-directive+json"
-)
+DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE = "application/vnd.novel-agent.draft-revision-directive+json"
 
 
 class OperatorReviewFinding(DomainModel):
@@ -546,8 +551,8 @@ def commit_task_from_acceptance(previous: TaskRecord, receipt: AcceptanceReceipt
 
 
 __all__ = [
-    "OPERATOR_PLAN_REVIEW_MEDIA_TYPE",
     "DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE",
+    "OPERATOR_PLAN_REVIEW_MEDIA_TYPE",
     "RUNTIME_CONTINUATION_EVIDENCE_MEDIA_TYPE",
     "RUNTIME_MODEL_REPLAY_EVIDENCE_MEDIA_TYPE",
     "AcceptanceCommand",

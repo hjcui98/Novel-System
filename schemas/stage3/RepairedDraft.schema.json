@@ -638,6 +638,9 @@
       "title": "Changed Spans",
       "type": "array"
     },
+    "context_id": {
+      "$ref": "#/$defs/StableId"
+    },
     "created_at": {
       "format": "date-time",
       "title": "Created At",
@@ -672,6 +675,12 @@
     "repair_report_id": {
       "$ref": "#/$defs/StableId"
     },
+    "snapshot_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "task_contract_id": {
+      "$ref": "#/$defs/StableId"
+    },
     "text_artifact": {
       "$ref": "#/$defs/ArtifactRef"
     }
@@ -680,6 +689,9 @@
     "draft_id",
     "parent_draft_id",
     "repair_report_id",
+    "task_contract_id",
+    "snapshot_id",
+    "context_id",
     "text_artifact",
     "changed_spans",
     "editor_receipt",

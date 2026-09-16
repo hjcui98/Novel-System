@@ -586,7 +586,7 @@ def test_provider_chapter_set_requires_real_history_needs_and_canonical_first_wa
                     "needs": [
                         {
                             "kind": "causal_history",
-                            "query": "第一章已经发生了什么？",
+                            "query": "第一章已经发生了什么？",  # noqa: RUF001
                             "entity_ids": ["entity.bootstrap.1"],
                             "source_chapter_end": 1,
                         }
@@ -614,7 +614,7 @@ def test_provider_chapter_set_requires_real_history_needs_and_canonical_first_wa
                             "needs": [
                                 {
                                     "kind": "causal_history",
-                                    "query": "陆沉舟如何掌握断纹斩第一式？",
+                                    "query": "陆沉舟如何掌握断纹斩第一式？",  # noqa: RUF001
                                     "source_chapter_end": 2,
                                 }
                             ],

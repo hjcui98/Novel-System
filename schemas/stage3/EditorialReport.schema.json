@@ -269,13 +269,89 @@
       "title": "DraftSpan",
       "type": "object"
     },
+    "EditorialConstraintSource": {
+      "additionalProperties": false,
+      "description": "The visible constraint a blocking Editor issue claims to violate.",
+      "properties": {
+        "conflict_reason": {
+          "minLength": 1,
+          "title": "Conflict Reason",
+          "type": "string"
+        },
+        "context_item_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "field_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field Name"
+        },
+        "kind": {
+          "$ref": "#/$defs/EditorialConstraintSourceKind"
+        }
+      },
+      "required": [
+        "kind",
+        "conflict_reason"
+      ],
+      "title": "EditorialConstraintSource",
+      "type": "object"
+    },
+    "EditorialConstraintSourceKind": {
+      "enum": [
+        "writing_task_field",
+        "context_item",
+        "chapter_scope"
+      ],
+      "title": "EditorialConstraintSourceKind",
+      "type": "string"
+    },
+    "EditorialEvidenceScope": {
+      "enum": [
+        "quote",
+        "chapter"
+      ],
+      "title": "EditorialEvidenceScope",
+      "type": "string"
+    },
     "EditorialIssue": {
       "additionalProperties": false,
       "properties": {
+        "constraint_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EditorialConstraintSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "description": {
           "minLength": 1,
           "title": "Description",
           "type": "string"
+        },
+        "evidence_scope": {
+          "$ref": "#/$defs/EditorialEvidenceScope",
+          "default": "quote"
         },
         "issue_id": {
           "$ref": "#/$defs/StableId"

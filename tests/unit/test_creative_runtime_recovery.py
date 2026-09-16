@@ -182,9 +182,7 @@ def test_recover_boundary_creates_one_bounded_editorial_retry(
         "model_validate_json",
         classmethod(lambda cls, value: writing_result),
     )
-    directive_ref = _ref("4").model_copy(
-        update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE}
-    )
+    directive_ref = _ref("4").model_copy(update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE})
     artifacts = Mock()
     artifacts.read_verified.return_value = b"{}"
     artifacts.put.return_value = directive_ref
@@ -209,9 +207,7 @@ def test_recover_boundary_creates_one_bounded_editorial_retry(
 
 
 def test_recover_boundary_repairs_legacy_false_ready_editorial_retry() -> None:
-    directive_ref = _ref("4").model_copy(
-        update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE}
-    )
+    directive_ref = _ref("4").model_copy(update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE})
     upstream = TaskId("task.recovery.upstream")
     rejected = _task(
         task_id=TaskId("task.recovery.draft.1.g6"),
@@ -270,9 +266,7 @@ def test_recover_boundary_moves_legacy_length_failure_to_fresh_generation(
         "model_validate_json",
         classmethod(lambda cls, value: writing_result),
     )
-    directive_ref = _ref("6").model_copy(
-        update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE}
-    )
+    directive_ref = _ref("6").model_copy(update={"media_type": DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE})
     artifacts = Mock()
     artifacts.put.return_value = directive_ref
     commands = Mock()

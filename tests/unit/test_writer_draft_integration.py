@@ -51,6 +51,14 @@ VERSION = SchemaVersion("1.0.0")
 MODEL_FINGERPRINT = content_id({"model": "stage3-integration-fake"})
 
 
+def _constraint_source(field_name: str, reason: str) -> dict[str, str]:
+    return {
+        "kind": "writing_task_field",
+        "field_name": field_name,
+        "conflict_reason": reason,
+    }
+
+
 def _writing_task() -> WritingTaskContract:
     return WritingTaskContract.model_validate_json(
         (ROOT / "tests" / "fixtures" / "stage3_writer" / "writing_task_contract.json").read_text(
@@ -290,6 +298,11 @@ def test_major_rewrite_is_a_route_and_does_not_loop(tmp_path: Path) -> None:
                     "severity": "critical",
                     "description": "The scene premise must be rebuilt.",
                     "structural": True,
+                    "evidence_scope": "chapter",
+                    "constraint_source": _constraint_source(
+                        "chapter_goal",
+                        "The scene premise does not execute the chapter goal.",
+                    ),
                 }
             ],
             "rewrite_targets": ("Rebuild the scene around the gate observation.",),
@@ -325,6 +338,10 @@ def test_local_repair_rebinds_observation_to_the_new_candidate(tmp_path: Path) -
                     "description": "The injury constraint needs a clearer local sentence.",
                     "evidence_quote": old_phrase,
                     "repairable": True,
+                    "constraint_source": _constraint_source(
+                        "mandatory_constraints",
+                        "The quoted sentence does not keep the injured-arm constraint visible.",
+                    ),
                 }
             ],
             "repair_instructions": ("Clarify the injury constraint in this sentence.",),
@@ -510,6 +527,10 @@ def test_result_properties_cover_empty_and_repaired_candidates(tmp_path: Path) -
                     "description": "Clarify the constraint.",
                     "evidence_quote": "靠蛮力推门并不可行",
                     "repairable": True,
+                    "constraint_source": _constraint_source(
+                        "mandatory_constraints",
+                        "The quoted sentence does not keep the injured-arm constraint visible.",
+                    ),
                 }
             ],
             "repair_instructions": ("Clarify the constraint.",),
@@ -561,6 +582,10 @@ def test_local_repair_failure_is_terminal_for_the_candidate(tmp_path: Path) -> N
                     "description": "Repair the local style issue.",
                     "evidence_quote": "靠蛮力推门并不可行",
                     "repairable": True,
+                    "constraint_source": _constraint_source(
+                        "style_requirements",
+                        "The quoted sentence does not meet the visible-action style requirement.",
+                    ),
                 }
             ],
             "repair_instructions": ("Repair the local style issue.",),
@@ -605,6 +630,10 @@ def test_local_repair_verification_stops_on_non_pass_or_error(
                     "description": "Repair the local style issue.",
                     "evidence_quote": "靠蛮力推门并不可行",
                     "repairable": True,
+                    "constraint_source": _constraint_source(
+                        "style_requirements",
+                        "The quoted sentence does not meet the visible-action style requirement.",
+                    ),
                 }
             ],
             "repair_instructions": ("Repair the local style issue.",),

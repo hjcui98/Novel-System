@@ -13,6 +13,8 @@ from scripts.native_models import (
     LOCK_PATH,
     LockedModelFile,
     _download_file,
+    _pid_path,
+    _service_script,
     load_model_lock,
     model_file_url,
     selected_models,
@@ -57,6 +59,16 @@ def test_model_lock_rejects_mutable_revision_and_unsafe_path(tmp_path: Path) -> 
     target.write_text(json.dumps(document), encoding="utf-8")
     with pytest.raises(NativeInfraError, match="unsafe or duplicate"):
         load_model_lock(target)
+
+
+def test_model_service_ownership_paths_follow_explicit_service_root(tmp_path: Path) -> None:
+    owned = tmp_path / "owned-worktree"
+    assert _pid_path("embedding") != _pid_path("embedding", service_root=owned)
+    assert _pid_path("embedding", service_root=owned) == (
+        owned / "tmp" / "native-models" / "run" / "embedding.json"
+    )
+    assert _service_script(owned) == owned / "scripts" / "retrieval_model_service.py"
+    assert "retrieval_model_service.py" in str(_service_script(owned))
 
 
 def test_model_selection_is_explicit_and_deduplicated() -> None:

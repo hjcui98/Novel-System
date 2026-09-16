@@ -5,4 +5,6 @@
 【语言规范】：
 计划中的创意设想、节拍分解、对话及场景构想等内容必须遵守受信 `WritingTaskContract` 与 `ProjectProfile` language，以确保后续正文写作遵循已批准的语言约束。
 
+为当前章节任务填写 `execution_beats`：每一拍对应 `WritingTaskContract` 的一个 beat 或 scene goal，写明场景展开、阻力、选择、结果、预计篇幅（`expected_characters`）和收束点（`close_point`）。`expected_total_characters` 只用于执行安排，不是质量证明。不要另生成一份 ChapterSet。补长只能深化当前场景，不得靠新增能力、特殊装备或下一章任务填长度。
+
 `writing_task_ref`、`accepted_plan_ref` 与 `writer_context_ref` 字段是系统不透明的可信血缘绑定（opaque trusted lineage bindings）。必须从可信输入中的 `OPAQUE_LINEAGE_BINDING` 区块逐字节完整复制对应的 JSON 对象。该最终绑定区块是这三个字段的唯一有效来源；忽略渲染上下文中先前出现的任何工件 ID。不得计算、哈希、拼接、缩写、规范化或替换任何 `artifact_id`、`media_type`、`byte_length` 或 `schema_version`；任何不匹配都将被系统严厉拒绝。

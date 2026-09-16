@@ -14,7 +14,7 @@ from sqlalchemy import create_engine
 from novel_agent.adapters.filesystem.object_store import FilesystemObjectStore
 from novel_agent.adapters.postgres.database import Base, build_session_factory
 from novel_agent.adapters.postgres.runtime import RuntimeTaskQueryRepository
-from novel_agent.cli import main
+from novel_agent.cli import _report_outcome, main
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
     AcceptanceCommand,
@@ -44,6 +44,7 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
+from novel_agent.domain.stage5_evaluation import Stage5VerticalRunReport, VerticalRunStatus
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.event_log import RunEventLogRepository
@@ -84,7 +85,34 @@ def _install_production_loader(
                     ),
                 )
 
-        assembly: dict[str, Any] = {"dispatcher": _Dispatcher()}
+        class _Tasks:
+            def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
+                if not progressed:
+                    return ()
+                return (
+                    TaskRecord(
+                        task_id=TaskId("task.cli.ready"),
+                        run_id=run_id,
+                        project_id=context.project_id,
+                        kind=TaskKind.DRAFT_CANDIDATE,
+                        task_revision=1,
+                        status=TaskStatus.READY,
+                        basis_commit=CommitId("sha256:" + "3" * 64),
+                        policy_hash=context.policy.policy_hash,
+                        permission_hash=context.policy.permission_hash,
+                        chapter_index=1,
+                        target_chapters=2,
+                    ),
+                )
+
+        class _Runtime:
+            pass
+
+        assembly: dict[str, Any] = {
+            "dispatcher": _Dispatcher(),
+            "task_reader": _Tasks(),
+            "runtime": _Runtime(),
+        }
         if attested:
             assembly["attestation"] = SimpleNamespace(
                 configuration_fingerprint=SimpleNamespace(root=context.policy.policy_hash),
@@ -827,6 +855,30 @@ def test_runtime_advance_no_ready_task_reports_progressed_zero(
     assert len(contexts) == 1
 
 
+def test_report_outcome_prefers_blocked_vertical_status_over_progressed_results() -> None:
+    report = Stage5VerticalRunReport(
+        run_id=RunId("run.cli"),
+        project_id=ProjectId("project.test"),
+        current_chapter=20,
+        target_chapter=21,
+        status=VerticalRunStatus.BLOCKED,
+        final_commit=CommitId("sha256:" + "3" * 64),
+        runtime_results=(
+            CreativeRunResult(
+                run_id=RunId("run.cli"),
+                project_id=ProjectId("project.test"),
+                terminal=CreativeRunTerminal.PROGRESSED,
+                basis_commit=CommitId("sha256:" + "3" * 64),
+                current_commit=CommitId("sha256:" + "4" * 64),
+                reason_code="recovered_then_blocked",
+            ),
+        ),
+        tasks=(),
+        outputs_frozen=False,
+    )
+    assert _report_outcome(report) == ("blocked", 2)
+
+
 @pytest.mark.parametrize(
     ("terminal", "expected_status", "expected_exit"),
     [
@@ -941,7 +993,16 @@ def test_runtime_advance_defaults_to_repo_production_factory(
                 del max_tasks
                 return ()
 
-        return type("Assembly", (), {"dispatcher": _Dispatcher()})()
+        class _Tasks:
+            def list_run(self, run_id: object) -> tuple[object, ...]:
+                del run_id
+                return ()
+
+        return type(
+            "Assembly",
+            (),
+            {"dispatcher": _Dispatcher(), "task_reader": _Tasks(), "runtime": object()},
+        )()
 
     monkeypatch.setattr(
         "novel_agent.runtime.creative_assembly.load_production_runtime_assembly",

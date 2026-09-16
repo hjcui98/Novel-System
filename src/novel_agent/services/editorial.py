@@ -14,24 +14,28 @@ from novel_agent.agents.editor import EditorAgent
 from novel_agent.agents.runner import AgentRunResult
 from novel_agent.domain.editorial import (
     DraftSpan,
+    EditorialConstraintSource,
+    EditorialConstraintSourceKind,
+    EditorialEvidenceScope,
     EditorialIssue,
     EditorialIssueDraft,
     EditorialLocation,
     EditorialRepairHistoryEntry,
     EditorialReport,
     EditorialReviewInput,
-    EditorialSeverity,
     EditorialVerdict,
     EditorReviewPayload,
     LocalRepairScope,
     RepairedDraft,
+    editorial_issue_is_blocking,
 )
-from novel_agent.domain.generation import RewriteDirective, RewriteScope
+from novel_agent.domain.generation import RewriteDirective, RewriteScope, WritingTaskContract
 from novel_agent.domain.ids import ArtifactId, SchemaVersion, StableId
 from novel_agent.domain.model_calls import ModelRequest
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
 from novel_agent.services.model_gateway import StructuredGenerationExhausted
+from novel_agent.services.writer_cognition import candidate_surface_error
 
 REPAIRED_TEXT_MEDIA_TYPE: Final[str] = "text/plain; charset=utf-8"
 REWRITE_DIRECTIVE_MEDIA_TYPE: Final[str] = (
@@ -97,15 +101,16 @@ def _editor_lens_instructions(selected: tuple[StableId, ...]) -> str:
 
 _EDITOR_CONTRACT_RETRY_INSTRUCTION = (
     "The previous Editor response was rejected by the host contract. Return one complete "
-    "replacement JSON object. For LOCAL_REPAIR, include non-empty repair_instructions and "
-    "an exact contiguous evidence_quote from the supplied Draft for every blocking issue; "
-    "do not invent or paraphrase a quote. If a blocking issue has no exact Draft location, "
-    "use MAJOR_REWRITE with non-empty rewrite_targets instead. Keep unresolved_needs "
-    "advisory and never use them as a substitute for the required fields. A contradiction, "
-    "cross-chapter event, unsupported state change, invented character, backstory, item, or "
-    "mechanism, and any internal inconsistency is an issue, not an unresolved_need. PASS is "
-    "invalid while any such defect remains, even when the Draft leaves it unexplained or calls "
-    "it a future question."
+    "replacement JSON object. This is a report-contract repair, not a Writer revision: do not "
+    "convert missing evidence, an unknown constraint source, or a self-contradictory report "
+    "into MAJOR_REWRITE or PASS. Every blocking issue must name a visible WritingTask field "
+    "or Context item and a conflict_reason. Quote-scoped issues need an exact contiguous "
+    "evidence_quote from the supplied Draft; do not invent or paraphrase a quote. Whole-chapter "
+    "absence or structure uses evidence_scope=chapter with no invented sentence quote. Keep "
+    "unresolved_needs advisory and never use them as a substitute for the required fields. A "
+    "contradiction, cross-chapter event, unsupported state change, invented character, "
+    "backstory, item, or mechanism, and any internal inconsistency is an issue, not an "
+    "unresolved_need. PASS is invalid while any such defect remains."
 )
 _EDITOR_NO_CHANGE_RETRY_SUFFIX = ".no-change-retry1"
 _EDITOR_NO_CHANGE_RETRY_FIELD = "host_no_change_retry"
@@ -364,11 +369,16 @@ class EditorialService:
                     require_complete=True,
                 )
                 continue
-            raise EditorialRepairError(
-                "LOCAL_REPAIR did not safely change every frozen issue span"
-            )
+            raise EditorialRepairError("LOCAL_REPAIR did not safely change every frozen issue span")
         else:  # pragma: no cover - the bounded loop always returns or raises above
             raise AssertionError("Editor LOCAL_REPAIR retry loop did not terminate")
+        surface_error = candidate_surface_error(
+            repaired_text,
+            length_policy=review_input.writing_task.length_policy,
+            forbidden_reveals=review_input.writing_task.forbidden_reveals,
+        )
+        if surface_error is not None:
+            raise EditorialRepairError(f"LOCAL_REPAIR failed surface checks: {surface_error}")
         try:
             text_artifact = self._artifacts.put(
                 repaired_text.encode("utf-8"),
@@ -384,6 +394,9 @@ class EditorialService:
                 "kind": "editor-local-repair-v1",
                 "parent_draft_id": review_input.draft.draft_id.root,
                 "repair_report_id": report.report_id.root,
+                "task_contract_id": review_input.writing_task.contract_id.root,
+                "snapshot_id": review_input.context.snapshot_id.root,
+                "context_id": review_input.context.context_id.root,
                 "text_artifact": text_artifact.model_dump(mode="json"),
             }
         )
@@ -392,6 +405,9 @@ class EditorialService:
                 draft_id=repaired_id,
                 parent_draft_id=review_input.draft.draft_id,
                 repair_report_id=report.report_id,
+                task_contract_id=review_input.writing_task.contract_id,
+                snapshot_id=review_input.context.snapshot_id,
+                context_id=review_input.context.context_id,
                 text_artifact=text_artifact,
                 changed_spans=changed_spans,
                 editor_receipt=receipt,
@@ -430,7 +446,6 @@ class EditorialService:
                 "payload": payload.model_dump(mode="json"),
             },
         )
-        require_exact_evidence = payload.verdict is not EditorialVerdict.MAJOR_REWRITE
         issues = tuple(
             _materialize_issue(
                 report_id,
@@ -438,7 +453,7 @@ class EditorialService:
                 issue,
                 text,
                 blocks,
-                require_exact_evidence=require_exact_evidence,
+                review_input=review_input,
             )
             for index, issue in enumerate(payload.issues)
         )
@@ -450,9 +465,11 @@ class EditorialService:
             blocking = tuple(
                 issue
                 for issue in issues
-                if issue.repairable
-                or issue.structural
-                or issue.severity in {EditorialSeverity.ERROR, EditorialSeverity.CRITICAL}
+                if editorial_issue_is_blocking(
+                    repairable=issue.repairable,
+                    structural=issue.structural,
+                    severity=issue.severity,
+                )
             )
             if not blocking:
                 # A model can over-route an advisory warning as LOCAL_REPAIR. It has no
@@ -543,6 +560,16 @@ def _review_payload(
             {"block_id": block.block_id.root, "text": block.text} for block in blocks
         ),
         "draft_text": text,
+        "paragraph_stats": _paragraph_stats(text),
+        "prior_issues": _prior_issues_for_payload(review_input, prior_repair_history),
+        "re_review_instructions": (
+            "Review the complete current candidate. Prior issues are only for checking "
+            "whether they closed; also re-check paragraphs, chapter goals, capability "
+            "bounds, repeated progression, and the full base checklist. Merge overlapping "
+            "repair spans; keep original reports and the mapping instead of deleting findings."
+            if (prior_repair_history or review_input.prior_repair_history)
+            else None
+        ),
         "admitted_lenses": [item.root for item in lenses],
         "lens_instructions": _editor_lens_instructions(lenses),
         "base_review_checklist": (
@@ -714,6 +741,114 @@ def _context_item_summary(item: object) -> dict[str, object]:
     }
 
 
+def _paragraph_stats(text: str) -> dict[str, int]:
+    paragraphs = tuple(part for part in text.split("\n\n") if part.strip())
+    return {
+        "character_count": len(text),
+        "paragraph_count": len(paragraphs),
+        "newline_count": text.count("\n"),
+    }
+
+
+def _prior_issues_for_payload(
+    review_input: EditorialReviewInput,
+    prior_repair_history: tuple[EditorialRepairHistoryEntry, ...] | None,
+) -> tuple[dict[str, object], ...]:
+    history = (
+        review_input.prior_repair_history if prior_repair_history is None else prior_repair_history
+    )
+    return tuple(
+        {
+            "report_id": entry.report_id.root,
+            "draft_id": entry.draft_id.root,
+            "verdict": entry.verdict.value,
+            "repaired_draft_id": (
+                None if entry.repaired_draft_id is None else entry.repaired_draft_id.root
+            ),
+        }
+        for entry in history
+    )
+
+
+_WRITING_TASK_CONSTRAINT_FIELDS = frozenset(
+    {
+        "pov",
+        "narrative_person",
+        "chapter_goal",
+        "scene_goals",
+        "required_beats",
+        "active_plan_obligations",
+        "mandatory_constraints",
+        "forbidden_reveals",
+        "preserve_requirements",
+        "style_requirements",
+        "participating_entity_ids",
+        "obligation_actions",
+        "blocking_gaps",
+        "length_policy",
+    }
+)
+
+
+def _writing_task_field_has_requirement(task: WritingTaskContract, field_name: str) -> bool:
+    if field_name not in _WRITING_TASK_CONSTRAINT_FIELDS:
+        return False
+    value = getattr(task, field_name)
+    if field_name == "length_policy":
+        return value is not None
+    if isinstance(value, str):
+        return bool(value.strip())
+    if isinstance(value, tuple):
+        return any(str(item).strip() for item in value)
+    return False
+
+
+def _visible_context_requirements(review_input: EditorialReviewInput) -> dict[str, str]:
+    requirements: dict[str, str] = {}
+    for item in _context_summary(review_input):
+        item_id = item.get("item_id")
+        text = item.get("text")
+        if isinstance(item_id, str) and isinstance(text, str) and text.strip():
+            requirements[item_id] = text
+    return requirements
+
+
+def _validate_constraint_source(
+    issue: EditorialIssueDraft,
+    review_input: EditorialReviewInput,
+) -> EditorialConstraintSource | None:
+    source = issue.constraint_source
+    blocking = editorial_issue_is_blocking(
+        repairable=issue.repairable,
+        structural=issue.structural,
+        severity=issue.severity,
+    )
+    if source is None:
+        if blocking:
+            raise EditorialReviewError("blocking Editor issue is missing a constraint source")
+        return None
+    if source.kind is EditorialConstraintSourceKind.CHAPTER_SCOPE:
+        raise EditorialReviewError(
+            "Editor constraint source cannot be chapter_scope; "
+            "name a WritingTask field or visible Context item"
+        )
+    if source.kind is EditorialConstraintSourceKind.WRITING_TASK_FIELD:
+        field_name = source.field_name
+        if field_name is None or not _writing_task_field_has_requirement(
+            review_input.writing_task, field_name
+        ):
+            raise EditorialReviewError(
+                "Editor constraint source does not name an effective WritingTask requirement"
+            )
+    elif source.kind is EditorialConstraintSourceKind.CONTEXT_ITEM:
+        item_id = None if source.context_item_id is None else source.context_item_id.root
+        if item_id is None or item_id not in _visible_context_requirements(review_input):
+            raise EditorialReviewError(
+                "Editor constraint source is not a visible non-empty Context item"
+            )
+    return source
+
+
 def _materialize_issue(
     report_id: StableId,
     index: int,
@@ -721,28 +856,36 @@ def _materialize_issue(
     text: str,
     blocks: tuple[_DraftBlock, ...],
     *,
-    require_exact_evidence: bool = True,
+    review_input: EditorialReviewInput,
 ) -> EditorialIssue:
     location: EditorialLocation | None = None
-    if issue.evidence_quote is not None:
+    constraint_source = _validate_constraint_source(issue, review_input)
+    if issue.evidence_scope is EditorialEvidenceScope.CHAPTER:
+        location = EditorialLocation(
+            start=0,
+            end=len(text),
+        )
+    elif issue.evidence_quote is not None:
         resolved = _resolve_quote(text, blocks, issue.evidence_quote, issue.occurrence)
         if resolved is None:
-            if require_exact_evidence:
-                raise EditorialReviewError("Editor issue evidence quote is absent from the Draft")
-        else:
-            block, start, end = resolved
-            if issue.block_hint is not None and issue.block_hint != block.block_id.root:
-                if require_exact_evidence:
-                    raise EditorialReviewError("Editor issue block hint does not match the Draft")
-            else:
-                location = EditorialLocation(
-                    block_id=block.block_id,
-                    start=start,
-                    end=end,
-                    evidence_quote=issue.evidence_quote,
-                    occurrence=issue.occurrence,
-                )
-    elif issue.block_hint is not None and require_exact_evidence:
+            raise EditorialReviewError("Editor issue evidence quote is absent from the Draft")
+        block, start, end = resolved
+        if issue.block_hint is not None and issue.block_hint != block.block_id.root:
+            raise EditorialReviewError("Editor issue block hint does not match the Draft")
+        location = EditorialLocation(
+            block_id=block.block_id,
+            start=start,
+            end=end,
+            evidence_quote=issue.evidence_quote,
+            occurrence=issue.occurrence,
+        )
+    elif editorial_issue_is_blocking(
+        repairable=issue.repairable,
+        structural=issue.structural,
+        severity=issue.severity,
+    ):
+        raise EditorialReviewError("blocking Editor issue is missing Draft evidence")
+    elif issue.block_hint is not None:
         raise EditorialReviewError("Editor issue block hint requires an evidence quote")
     return EditorialIssue(
         issue_id=_stable_id(
@@ -755,6 +898,8 @@ def _materialize_issue(
         location=location,
         repairable=issue.repairable,
         structural=issue.structural,
+        constraint_source=constraint_source,
+        evidence_scope=issue.evidence_scope,
     )
 
 

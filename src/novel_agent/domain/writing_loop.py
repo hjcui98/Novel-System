@@ -226,6 +226,7 @@ class WritingLoopResult(DomainModel):
         if ready and (
             not self.editorial_reports
             or self.editorial_reports[-1].verdict.value != "PASS"
+            or self.editorial_reports[-1].draft_id != self.final_candidate_id
             or self.observation is None
             or self.observation.draft_id != self.final_candidate_id
             or self.reconciliation is None

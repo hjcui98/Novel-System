@@ -5,6 +5,7 @@ from __future__ import annotations
 import hashlib
 
 from novel_agent.domain.agent_context import AgentContextView
+from novel_agent.domain.editorial import RepairedDraft
 from novel_agent.domain.generation import (
     DraftArtifact,
     WriterArtifactBasis,
@@ -25,7 +26,11 @@ from novel_agent.domain.stage2 import (
 )
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
-from novel_agent.services.writer_cognition import WriterTurnResult
+from novel_agent.services.writer_cognition import (
+    WriterTurnResult,
+    candidate_surface_error,
+    language_allowlist_tokens,
+)
 
 WRITER_VIEW_MEDIA_TYPE = "application/vnd.novel-agent.agent-context-view+json"
 WRITER_DRAFT_TEXT_MEDIA_TYPE = "application/vnd.novel-agent.draft-text+plain"
@@ -53,12 +58,12 @@ class WriterCandidateMaterializer:
         turn: WriterTurnResult,
         *,
         mode: AgentMode,
-        parent_draft: DraftArtifact | None = None,
+        parent_draft: DraftArtifact | RepairedDraft | None = None,
     ) -> DraftArtifact:
         output = turn.output
         if output.action is not WriterTurnAction.DRAFT_READY or output.draft_text is None:
             raise WriterCandidateError("only DRAFT_READY can form a DraftArtifact")
-        self.enforce_length_contract(output.draft_text, request)
+        self.enforce_candidate_surface(output.draft_text, request)
         if mode is AgentMode.DRAFT and parent_draft is not None:
             raise WriterCandidateError("initial Draft cannot have a parent")
         if mode is AgentMode.MAJOR_REWRITE and parent_draft is None:
@@ -170,18 +175,32 @@ class WriterCandidateMaterializer:
     def enforce_length_contract(text: str, request: WritingLoopRequest) -> None:
         """Reject a Writer output before it can become an accepted candidate."""
 
-        length = len(text)
-        policy = request.writing_task.length_policy
-        if length < policy.minimum_characters:
-            raise WriterCandidateError(
-                "Writer draft is shorter than trusted WritingTask minimum "
-                f"({length} < {policy.minimum_characters})"
-            )
-        if length > policy.maximum_characters:
-            raise WriterCandidateError(
-                "Writer draft exceeds trusted WritingTask maximum "
-                f"({length} > {policy.maximum_characters})"
-            )
+        WriterCandidateMaterializer.enforce_candidate_surface(text, request)
+
+    @staticmethod
+    def enforce_candidate_surface(text: str, request: WritingLoopRequest) -> None:
+        """Apply the shared length, marker, language, and copy surface gate."""
+
+        language = next(
+            (
+                constraint.split("：", 1)[1].strip()  # noqa: RUF001
+                for constraint in request.writing_task.mandatory_constraints
+                if constraint.startswith("正文语言：")  # noqa: RUF001
+                and constraint.split("：", 1)[1].strip()  # noqa: RUF001
+            ),
+            None,
+        )
+        surface_error = candidate_surface_error(
+            text,
+            length_policy=request.writing_task.length_policy,
+            target_language=language,
+            allowed_language_tokens=language_allowlist_tokens(
+                request.writing_task.mandatory_constraints
+            ),
+            forbidden_reveals=request.writing_task.forbidden_reveals,
+        )
+        if surface_error is not None:
+            raise WriterCandidateError(surface_error)
 
     @staticmethod
     def editor_context(

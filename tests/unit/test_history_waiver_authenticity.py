@@ -106,7 +106,7 @@ def test_future_event_history_finding_authorizes_history_field_not_coverage() ->
                             "needs": [
                                 {
                                     "kind": "causal_history",
-                                    "query": "陆沉舟如何进入斩星府外府？",
+                                    "query": "陆沉舟如何进入斩星府外府？",  # noqa: RUF001
                                     "entity_ids": ["entity.bootstrap.1"],
                                     "predicates": ["organization_entry"],
                                     "source_chapter_end": 1,

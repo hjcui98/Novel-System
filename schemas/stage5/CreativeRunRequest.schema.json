@@ -152,6 +152,20 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
       "type": "string"
+    },
+    "TaskKind": {
+      "enum": [
+        "plan_candidate",
+        "plan_acceptance",
+        "plan_commit",
+        "draft_candidate",
+        "draft_acceptance",
+        "draft_commit",
+        "projection_freshness",
+        "maintenance"
+      ],
+      "title": "TaskKind",
+      "type": "string"
     }
   },
   "additionalProperties": false,
@@ -184,6 +198,10 @@
       "minimum": 0,
       "title": "Current Chapter",
       "type": "integer"
+    },
+    "initial_task_kind": {
+      "$ref": "#/$defs/TaskKind",
+      "default": "plan_candidate"
     },
     "input_artifact_refs": {
       "default": [],

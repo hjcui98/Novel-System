@@ -184,11 +184,19 @@ class WritingLengthPolicy(DomainModel):
     minimum_characters: int = Field(ge=1)
     target_characters: int = Field(ge=1)
     maximum_characters: int = Field(ge=1)
+    minimum_paragraphs: int | None = Field(default=None, ge=1)
+    maximum_paragraphs: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_order(self) -> WritingLengthPolicy:
         if not (self.minimum_characters <= self.target_characters <= self.maximum_characters):
             raise ValueError("Writer length policy requires minimum <= target <= maximum")
+        if (
+            self.minimum_paragraphs is not None
+            and self.maximum_paragraphs is not None
+            and self.minimum_paragraphs > self.maximum_paragraphs
+        ):
+            raise ValueError("Writer paragraph policy requires minimum <= maximum")
         return self
 
 
@@ -363,6 +371,18 @@ class WritingLoopRequest(DomainModel):
         return self
 
 
+class WriterSceneExecutionBeat(DomainModel):
+    """Execution arrangement for one chapter beat. Expected length is not a quality proof."""
+
+    beat_ref: _NonEmptyText
+    scene_expansion: _NonEmptyText
+    resistance: _NonEmptyText
+    choice: _NonEmptyText
+    outcome: _NonEmptyText
+    expected_characters: int = Field(ge=1)
+    close_point: _NonEmptyText
+
+
 class WriterWorkPlan(DomainModel):
     work_plan_id: StableId
     writing_task_ref: ArtifactRef
@@ -384,6 +404,8 @@ class WriterWorkPlan(DomainModel):
     selected_skill_ids: tuple[StableId, ...] = Field(min_length=1)
     expected_skill_checkpoints: dict[str, tuple[_NonEmptyText, ...]] = Field(default_factory=dict)
     creative_proposals: tuple[_NonEmptyText, ...] = ()
+    execution_beats: tuple[WriterSceneExecutionBeat, ...] = ()
+    expected_total_characters: int | None = Field(default=None, ge=1)
 
     @model_validator(mode="after")
     def validate_skill_plan(self) -> WriterWorkPlan:
@@ -831,6 +853,7 @@ __all__ = [
     "WriterInvocation",
     "WriterMemoryRequest",
     "WriterRuntimeFingerprints",
+    "WriterSceneExecutionBeat",
     "WriterShadowManifest",
     "WriterSidecar",
     "WriterSourceBinding",

@@ -381,8 +381,7 @@ def test_rejected_draft_creates_same_run_writer_revision(
     assert revised.status is TaskStatus.READY
     assert revised.writer_generation == 1
     assert any(
-        ref.media_type == DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE
-        for ref in revised.input_artifact_refs
+        ref.media_type == DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE for ref in revised.input_artifact_refs
     )
 
 

@@ -81,6 +81,34 @@ def _advance_outcome(results: Sequence[CreativeRunResult]) -> tuple[str, int]:
     return "succeeded", 0
 
 
+def _report_outcome(report: object) -> tuple[str, int]:
+    """Map a VerticalCreativeRunner slice to an honest CLI status."""
+
+    from novel_agent.domain.runtime import TaskKind, TaskStatus
+    from novel_agent.domain.stage5_evaluation import Stage5VerticalRunReport, VerticalRunStatus
+
+    if not isinstance(report, Stage5VerticalRunReport):
+        raise TypeError("advance requires a vertical run report")
+    if report.status is VerticalRunStatus.BLOCKED:
+        return "blocked", 2
+    if report.status is VerticalRunStatus.RECOVERY_PENDING:
+        return "recovery_pending", 3
+    if report.status is VerticalRunStatus.COMPLETED:
+        return "completed", 0
+    if report.status is VerticalRunStatus.YIELDED:
+        return "yielded", 0
+    if report.runtime_results:
+        return _advance_outcome(report.runtime_results)
+    if any(
+        not task.superseded
+        and task.kind in {TaskKind.PLAN_ACCEPTANCE, TaskKind.DRAFT_ACCEPTANCE}
+        and task.status is TaskStatus.WAITING_INPUT
+        for task in report.tasks
+    ):
+        return "waiting_input", 0
+    return "waiting", 0
+
+
 def _write_json_once(path: Path, payload: object) -> None:
     if path.exists():
         raise RuntimeError(f"runtime CLI refuses to overwrite receipt: {path}")
@@ -143,12 +171,14 @@ def _resolve_retrieval_options(
             args.retrieval_backend_profile or committed_profile or "memory"
         )
     }
-    for name in ("opensearch_url", "embedding_url", "reranker_url"):
+    for name in ("opensearch_url", "embedding_url", "reranker_url", "retrieval_service_root"):
         explicit = getattr(args, name)
         if explicit is not None:
-            resolved[name] = explicit
+            resolved[name] = str(explicit)
             continue
-        from_descriptor = {getattr(d, name) for d in descriptors if getattr(d, name) is not None}
+        from_descriptor = {
+            str(getattr(d, name)) for d in descriptors if getattr(d, name) is not None
+        }
         if len(from_descriptor) > 1:
             raise RuntimeError(
                 f"run descriptors were frozen against different {name} values: "
@@ -180,6 +210,7 @@ def _add_runtime_options(parser: argparse.ArgumentParser) -> None:
     parser.add_argument("--opensearch-url")
     parser.add_argument("--embedding-url")
     parser.add_argument("--reranker-url")
+    parser.add_argument("--retrieval-service-root", type=Path)
 
 
 def _policy_with_runtime_options(
@@ -840,6 +871,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                     opensearch_url=args.opensearch_url or "",
                     embedding_url=args.embedding_url or "",
                     reranker_url=args.reranker_url or "",
+                    retrieval_service_root=(
+                        None
+                        if args.retrieval_service_root is None
+                        else str(args.retrieval_service_root)
+                    ),
                 )
             _write_json_once(args.policy, policy.model_dump(mode="json"))
             _write_json_once(args.request, request.model_dump(mode="json"))
@@ -859,6 +895,11 @@ def main(argv: Sequence[str] | None = None) -> int:
                         "opensearch_url": args.opensearch_url,
                         "embedding_url": args.embedding_url,
                         "reranker_url": args.reranker_url,
+                        "retrieval_service_root": (
+                            None
+                            if args.retrieval_service_root is None
+                            else str(args.retrieval_service_root)
+                        ),
                     }
                 ],
             )
@@ -915,6 +956,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                 opensearch_url=dispatch_retrieval["opensearch_url"] or "",
                 embedding_url=dispatch_retrieval["embedding_url"] or "",
                 reranker_url=dispatch_retrieval["reranker_url"] or "",
+                retrieval_service_root=dispatch_retrieval.get("retrieval_service_root"),
             )
             try:
                 dispatch_result = _run_async(
@@ -971,6 +1013,7 @@ def main(argv: Sequence[str] | None = None) -> int:
                         opensearch_url=args.opensearch_url,
                         embedding_url=args.embedding_url,
                         reranker_url=args.reranker_url,
+                        retrieval_service_root=args.retrieval_service_root,
                     ),
                 )
             except RuntimeError as error:
@@ -989,15 +1032,82 @@ def main(argv: Sequence[str] | None = None) -> int:
                 }
                 print(json.dumps(advance_configuration_output, ensure_ascii=False, sort_keys=True))
                 return 2
+            from novel_agent.runtime.vertical_runner import VerticalCreativeRunner
+
+            runner = VerticalCreativeRunner(
+                runtime=assembly.runtime,
+                dispatcher=assembly.dispatcher,
+                tasks=assembly.task_reader,
+            )
             try:
-                results = _run_async(assembly.dispatcher.run_bounded(max_tasks=args.max_tasks))
+                advance_tasks = assembly.task_reader.list_run(RunId(args.run_id))
+                if not advance_tasks:
+                    report_status, advance_exit_code = "waiting", 0
+                    advance_output = {
+                        "status": report_status,
+                        "progressed": 0,
+                        "results": [],
+                        "reason": "no_authoritative_tasks",
+                    }
+                    admission = _admission_receipt(assembly)
+                    if admission is not None:
+                        advance_output["admission"] = admission
+                    if args.receipt is not None:
+                        if attestation is None:
+                            raise RuntimeError(
+                                "production assembly did not provide a CLI attestation"
+                            )
+                        _write_json_once(
+                            args.receipt,
+                            {
+                                "receipt_type": "runtime_cli_advance",
+                                "status": report_status,
+                                "assembly_factory": args.assembly_factory,
+                                "endpoint_profile": args.endpoint_profile,
+                                "spec_locator": attestation.factory_locator,
+                                "session_factory_identity": attestation.session_factory_identity,
+                                "model_gateway": attestation.model_gateway,
+                                "endpoints": [
+                                    item.model_dump(mode="json") for item in attestation.endpoints
+                                ],
+                                **advance_output,
+                            },
+                        )
+                    print(json.dumps(advance_output, sort_keys=True))
+                    return advance_exit_code
+                try:
+                    advance_request = VerticalCreativeRunner.request_from_tasks(
+                        project_id=ProjectId(args.project_id),
+                        run_id=RunId(args.run_id),
+                        policy=policy,
+                        tasks=advance_tasks,
+                    )
+                except RuntimeError as error:
+                    if "already reached its target chapter" not in str(error):
+                        raise
+                    report_status, advance_exit_code = "completed", 0
+                    advance_output = {
+                        "status": report_status,
+                        "progressed": 0,
+                        "results": [],
+                        "reason": "target_chapter_reached",
+                    }
+                    print(json.dumps(advance_output, sort_keys=True))
+                    return advance_exit_code
+                advance_report = _run_async(
+                    runner.advance_slice(advance_request, max_tasks=args.max_tasks)
+                )
             except (ModelEndpointError, ConnectionError, TimeoutError, OSError) as error:
                 return _resource_blocked(error)
-            advance_status, advance_exit_code = _advance_outcome(results)
-            advance_output: dict[str, object] = {
+            advance_status, advance_exit_code = _report_outcome(advance_report)
+            results = advance_report.runtime_results
+            last = results[-1] if results else None
+            advance_output = {
                 "status": advance_status,
                 "progressed": len(results),
                 "results": [item.model_dump(mode="json") for item in results],
+                "vertical_status": advance_report.status.value,
+                "reason": None if last is None else last.reason_code,
             }
             admission = _admission_receipt(assembly)
             if admission is not None:

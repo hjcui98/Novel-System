@@ -1254,10 +1254,36 @@
           "title": "Maximum Characters",
           "type": "integer"
         },
+        "maximum_paragraphs": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Maximum Paragraphs"
+        },
         "minimum_characters": {
           "minimum": 1,
           "title": "Minimum Characters",
           "type": "integer"
+        },
+        "minimum_paragraphs": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Minimum Paragraphs"
         },
         "target_characters": {
           "minimum": 1,

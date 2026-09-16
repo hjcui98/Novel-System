@@ -190,6 +190,13 @@ def _local_review(quote: str) -> str:
                     "occurrence": 0,
                     "repairable": True,
                     "structural": False,
+                    "constraint_source": {
+                        "kind": "writing_task_field",
+                        "field_name": "style_requirements",
+                        "conflict_reason": (
+                            "The quoted action is too vague for the style requirement."
+                        ),
+                    },
                 }
             ],
             "repair_instructions": ["Clarify the action without changing the scene beat."],
@@ -213,6 +220,11 @@ def _multi_local_review(first_quote: str, second_quote: str) -> str:
             "occurrence": 0,
             "repairable": True,
             "structural": False,
+            "constraint_source": {
+                "kind": "writing_task_field",
+                "field_name": "required_beats",
+                "conflict_reason": "The second quote contradicts a required beat.",
+            },
         }
     )
     payload["repair_instructions"] = [
@@ -235,6 +247,14 @@ def _major_review() -> str:
                     "occurrence": 0,
                     "repairable": False,
                     "structural": True,
+                    "evidence_scope": "chapter",
+                    "constraint_source": {
+                        "kind": "writing_task_field",
+                        "field_name": "chapter_goal",
+                        "conflict_reason": (
+                            "The entrance structure does not execute the chapter goal."
+                        ),
+                    },
                 }
             ],
             "repair_instructions": [],
@@ -389,6 +409,76 @@ def test_warning_only_local_repair_is_passed_to_writer_as_advisory(
     assert len(report.issues) == 1
     assert report.issues[0].severity is EditorialSeverity.WARNING
     assert report.unresolved_needs == ("The wording is related but not blocking.",)
+
+
+def test_blocking_editor_reports_require_an_effective_constraint_source(
+    tmp_path: Path,
+    monkeypatch: pytest.MonkeyPatch,
+) -> None:
+    def _major(issue: dict[str, object]) -> str:
+        return json.dumps(
+            {
+                "verdict": "MAJOR_REWRITE",
+                "issues": [issue],
+                "rewrite_targets": ["Rebuild the entrance around the light condition."],
+            },
+            ensure_ascii=False,
+        )
+
+    structural_warning = {
+        "issue_type": "structure",
+        "severity": "warning",
+        "description": "The entrance structure is incomplete.",
+        "structural": True,
+        "evidence_scope": "chapter",
+    }
+    chapter_scope_only = {
+        "issue_type": "structure",
+        "severity": "error",
+        "description": "The entrance structure is incomplete.",
+        "structural": True,
+        "evidence_scope": "chapter",
+        "constraint_source": {
+            "kind": "chapter_scope",
+            "conflict_reason": "The chapter does not execute the goal.",
+        },
+    }
+    empty_gaps = {
+        "issue_type": "structure",
+        "severity": "error",
+        "description": "The entrance structure is incomplete.",
+        "structural": True,
+        "evidence_scope": "chapter",
+        "constraint_source": {
+            "kind": "writing_task_field",
+            "field_name": "blocking_gaps",
+            "conflict_reason": "A gap field exists but is empty.",
+        },
+    }
+    for payload in (_major(structural_warning), _major(chapter_scope_only), _major(empty_gaps)):
+        harness = _harness(tmp_path / str(hash(payload)), payload, monkeypatch)
+        with pytest.raises(EditorialReviewError, match="valid report"):
+            asyncio.run(harness.service.review(harness.review_input, _request("blocking-source")))
+
+    valid = _major(
+        {
+            "issue_type": "structure",
+            "severity": "error",
+            "description": "The entrance structure is incomplete.",
+            "structural": True,
+            "evidence_scope": "chapter",
+            "constraint_source": {
+                "kind": "writing_task_field",
+                "field_name": "chapter_goal",
+                "conflict_reason": "The draft never finds a way into the north tower.",
+            },
+        }
+    )
+    harness = _harness(tmp_path / "valid-source", valid, monkeypatch)
+    report = asyncio.run(harness.service.review(harness.review_input, _request("valid-source")))
+    assert report.verdict is EditorialVerdict.MAJOR_REWRITE
+    assert report.issues[0].constraint_source is not None
+    assert report.issues[0].constraint_source.field_name == "chapter_goal"
 
 
 def test_local_repair_creates_child_candidate_and_preserves_parent(
@@ -685,13 +775,15 @@ def test_major_rewrite_keeps_structural_issue_when_evidence_quote_is_not_contigu
     monkeypatch: pytest.MonkeyPatch,
 ) -> None:
     payload = json.loads(_major_review())
-    payload["issues"][0]["evidence_quote"] = "not a contiguous draft quote …"
+    payload["issues"][0]["evidence_scope"] = "chapter"
+    payload["issues"][0]["evidence_quote"] = None
     harness = _harness(tmp_path, json.dumps(payload, ensure_ascii=False), monkeypatch)
 
     report = asyncio.run(harness.service.review(harness.review_input, _request("major-quote")))
 
     assert report.verdict is EditorialVerdict.MAJOR_REWRITE
-    assert report.issues[0].location is None
+    assert report.issues[0].location is not None
+    assert report.issues[0].evidence_scope.value == "chapter"
     assert report.rewrite_directive is not None
 
 
@@ -1128,6 +1220,95 @@ def test_repaired_draft_and_reconciliation_contract_edges(
     repaired = asyncio.run(
         harness.service.repair(harness.review_input, report, _request("edge-repair"))
     )
+    history = (
+        EditorialRepairHistoryEntry(
+            report_id=report.report_id,
+            draft_id=harness.review_input.draft.draft_id,
+            verdict=report.verdict,
+            repaired_draft_id=repaired.draft_id,
+        ),
+    )
+    bound = EditorialReviewInput(
+        draft=repaired,
+        writing_task=harness.review_input.writing_task,
+        context=harness.review_input.context,
+        prior_repair_history=history,
+    )
+    assert bound.draft.draft_id == repaired.draft_id
+    with pytest.raises(ValueError, match="matching parent candidate"):
+        EditorialReviewInput(
+            draft=repaired,
+            writing_task=harness.review_input.writing_task,
+            context=harness.review_input.context,
+        )
+    with pytest.raises(ValueError, match="matching parent candidate"):
+        EditorialReviewInput(
+            draft=_validated_replace(repaired, parent_draft_id=ArtifactId("sha256:" + "0" * 64)),
+            writing_task=harness.review_input.writing_task,
+            context=harness.review_input.context,
+            prior_repair_history=history,
+        )
+    with pytest.raises(ValueError, match="matching parent candidate"):
+        EditorialReviewInput(
+            draft=_validated_replace(
+                repaired,
+                repair_report_id=StableId("report.unrelated"),
+            ),
+            writing_task=harness.review_input.writing_task,
+            context=harness.review_input.context,
+            prior_repair_history=history,
+        )
+    with pytest.raises(ValueError, match="different commits"):
+        EditorialReviewInput(
+            draft=_validated_replace(
+                repaired,
+                editor_receipt=_validated_replace(
+                    repaired.editor_receipt,
+                    base_commit=CommitId("sha256:" + "2" * 64),
+                ),
+            ),
+            writing_task=harness.review_input.writing_task,
+            context=harness.review_input.context,
+            prior_repair_history=history,
+        )
+    with pytest.raises(ValueError, match="different tasks"):
+        EditorialReviewInput(
+            draft=repaired,
+            writing_task=_validated_replace(
+                harness.review_input.writing_task,
+                contract_id=StableId("writing-contract.other"),
+            ),
+            context=harness.review_input.context,
+            prior_repair_history=history,
+        )
+    other_task = _validated_replace(
+        harness.review_input.writing_task,
+        contract_id=StableId("writing-contract.other"),
+    )
+    other_context = _validated_replace(
+        harness.review_input.context,
+        task_contract="writing-contract.other",
+        snapshot_id=StableId("snapshot.other"),
+        context_id=StableId("context.other"),
+    )
+    with pytest.raises(ValueError, match="different WritingTask"):
+        EditorialReviewInput(
+            draft=repaired,
+            writing_task=other_task,
+            context=other_context,
+            prior_repair_history=history,
+        )
+    with pytest.raises(ValueError, match="different snapshots"):
+        EditorialReviewInput(
+            draft=repaired,
+            writing_task=harness.review_input.writing_task,
+            context=_validated_replace(
+                harness.review_input.context,
+                snapshot_id=StableId("snapshot.other"),
+                context_id=StableId("context.other"),
+            ),
+            prior_repair_history=history,
+        )
     assert repaired.source_draft_id == repaired.parent_draft_id
     with pytest.raises(ValueError, match="new candidate"):
         _validated_replace(repaired, draft_id=repaired.parent_draft_id)
@@ -1298,6 +1479,11 @@ def test_editorial_context_summary_supports_legacy_section_shapes() -> None:
                         "evidence_quote": "石门向里退开",
                         "block_hint": "block.wrong",
                         "repairable": True,
+                        "constraint_source": {
+                            "kind": "writing_task_field",
+                            "field_name": "style_requirements",
+                            "conflict_reason": "The block hint does not match the Draft.",
+                        },
                     }
                 ],
                 "repair_instructions": ["repair"],
@@ -1313,6 +1499,11 @@ def test_editorial_context_summary_supports_legacy_section_shapes() -> None:
                         "description": "hint without quote",
                         "block_hint": "block.wrong",
                         "repairable": True,
+                        "constraint_source": {
+                            "kind": "writing_task_field",
+                            "field_name": "style_requirements",
+                            "conflict_reason": "A block hint was supplied without a quote.",
+                        },
                     }
                 ],
                 "repair_instructions": ["repair"],

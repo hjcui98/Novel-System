@@ -7,11 +7,12 @@ from datetime import UTC, datetime
 from typing import Protocol, cast
 
 from novel_agent.domain.creative_runtime import (
+    CreativeRunPolicy,
     CreativeRunRequest,
     CreativeRunResult,
     CreativeRunTerminal,
 )
-from novel_agent.domain.ids import TaskId
+from novel_agent.domain.ids import ProjectId, RunId, TaskId
 from novel_agent.domain.runtime import FailureClass, TaskKind, TaskPurpose, TaskRecord, TaskStatus
 from novel_agent.domain.stage5_evaluation import Stage5VerticalRunReport, VerticalRunStatus
 from novel_agent.ports.creative_runtime import RuntimeTaskReader
@@ -152,6 +153,116 @@ class VerticalCreativeRunner:
             runtime_results=tuple(results),
             tasks=tasks,
             outputs_frozen=status is VerticalRunStatus.COMPLETED,
+        )
+
+    async def advance_slice(
+        self,
+        request: CreativeRunRequest,
+        *,
+        max_tasks: int,
+    ) -> Stage5VerticalRunReport:
+        """Read authoritative tasks, recover the legal boundary, then dispatch READY.
+
+        Unlike ``run``, this does not create a new run when the task list is empty.
+        Empty or blocked states are returned as the actual stop reason.
+        """
+
+        if max_tasks < 1:
+            raise ValueError("vertical runner dispatch slice size must be positive")
+        bind_request = getattr(self._runtime, "bind_run_request", None)
+        if callable(bind_request):
+            bind_request(request)
+        requested_current_chapter = request.current_chapter
+        tasks = self._tasks.list_run(request.run_id)
+        canonical_current_chapter = self._canonical_current_chapter(request, tasks)
+        if canonical_current_chapter != request.current_chapter:
+            request = request.model_copy(update={"current_chapter": canonical_current_chapter})
+        results: list[CreativeRunResult] = []
+        recovered = self._recover_boundary(tasks)
+        if recovered is not None:
+            results.append(recovered)
+            tasks = self._tasks.list_run(request.run_id)
+        dispatch_slices = 0
+        blocking = self._has_blocking_task(tasks) and not self._has_runnable_background_work(tasks)
+        if not blocking and self._has_runnable_work(tasks):
+            progressed = await self._dispatcher.run_bounded(max_tasks=max_tasks)
+            dispatch_slices = 1
+            results.extend(progressed)
+            tasks = self._tasks.list_run(request.run_id)
+        completed_chapters = self._completed_chapters(
+            request, tasks, floor=requested_current_chapter
+        )
+        status = self._status(
+            tuple(results),
+            completed_target=request.target_chapters in completed_chapters,
+            tasks=tasks,
+            reached_slice_limit=False,
+            reached_chapter_boundary=False,
+        )
+        final_commit = (
+            results[-1].current_commit
+            if results
+            else (tasks[-1].basis_commit if tasks else request.basis_commit)
+        )
+        return Stage5VerticalRunReport(
+            run_id=request.run_id,
+            project_id=request.project_id,
+            current_chapter=request.current_chapter,
+            requested_current_chapter=requested_current_chapter,
+            target_chapter=request.target_chapters,
+            status=status,
+            final_commit=final_commit,
+            completed_chapters=completed_chapters,
+            dispatch_slices=dispatch_slices,
+            runtime_results=tuple(results),
+            tasks=tasks,
+            outputs_frozen=status is VerticalRunStatus.COMPLETED,
+        )
+
+    @staticmethod
+    def request_from_tasks(
+        *,
+        project_id: ProjectId,
+        run_id: RunId,
+        policy: CreativeRunPolicy,
+        tasks: tuple[TaskRecord, ...],
+    ) -> CreativeRunRequest:
+        matching = tuple(
+            task for task in tasks if task.project_id == project_id and not task.superseded
+        )
+        if not matching:
+            raise RuntimeError("production run has no matching project tasks")
+        committed = [
+            task.chapter_index
+            for task in matching
+            if task.kind is TaskKind.PROJECTION_FRESHNESS
+            and task.projection_after == "draft"
+            and task.status is TaskStatus.SUCCEEDED
+            and task.chapter_index >= 1
+        ]
+        current_chapter = max(committed, default=0)
+        target_chapters = max(task.target_chapters for task in matching)
+        if target_chapters <= current_chapter:
+            raise RuntimeError("production run has already reached its target chapter")
+        first = min(matching, key=lambda task: (task.chapter_index, task.task_id.root))
+        initial_task_kind = (
+            first.kind
+            if first.kind in {TaskKind.PLAN_CANDIDATE, TaskKind.DRAFT_CANDIDATE}
+            else (TaskKind.DRAFT_CANDIDATE if first.plan_level is None else TaskKind.PLAN_CANDIDATE)
+        )
+        plan_level = None if initial_task_kind is TaskKind.DRAFT_CANDIDATE else first.plan_level
+        return CreativeRunRequest(
+            run_id=run_id,
+            project_id=project_id,
+            basis_commit=first.basis_commit,
+            basis_snapshot=first.basis_snapshot,
+            policy=policy,
+            input_artifact_refs=first.input_artifact_refs,
+            continuation_artifact_refs=first.terminal_artifact_refs,
+            current_chapter=current_chapter,
+            target_chapters=target_chapters,
+            plan_level=plan_level,
+            initial_task_kind=initial_task_kind,
         )
 
     def _recover_boundary(self, tasks: tuple[TaskRecord, ...]) -> CreativeRunResult | None:

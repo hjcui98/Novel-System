@@ -88,7 +88,10 @@ from novel_agent.services.content_addressing import (
     world_root_content_id,
 )
 from novel_agent.services.text_timeline import SequentialTextRootService
-from novel_agent.services.writer_cognition import draft_surface_error, language_allowlist_tokens
+from novel_agent.services.writer_cognition import (
+    candidate_surface_error,
+    language_allowlist_tokens,
+)
 
 PLAN_PROPOSAL_MEDIA_TYPE = "application/vnd.novel-agent.plan-proposal+json"
 PLAN_REVIEW_MEDIA_TYPE = "application/vnd.novel-agent.plan-review+json"
@@ -1644,8 +1647,9 @@ class DraftCandidateMaterializer(_TrustedMaterializer):
                 continue
             compact = prior.chapter_index != chapter_index - 1
             recent_prose.append((prose if not compact else prose[-1_500:], compact))
-        surface_error = draft_surface_error(
+        surface_error = candidate_surface_error(
             text,
+            length_policy=writing_task.length_policy,
             target_language=language,
             allowed_language_tokens=language_allowlist_tokens(writing_task.mandatory_constraints),
             forbidden_reveals=writing_task.forbidden_reveals,

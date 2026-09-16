@@ -4,6 +4,7 @@ from __future__ import annotations
 
 from dataclasses import dataclass
 from importlib import import_module
+from pathlib import Path
 from typing import Any
 from urllib.parse import urlparse
 
@@ -102,6 +103,7 @@ def assemble_production_real_hybrid(
     opensearch_url: str,
     embedding_url: str,
     reranker_url: str,
+    retrieval_service_root: str | None = None,
 ) -> ProductionRealHybridAssembly:
     """Build the existing real-hybrid owners and fail closed before the first search."""
 
@@ -109,8 +111,11 @@ def assemble_production_real_hybrid(
     lock = native_models.load_model_lock()
     embedding_model = lock.models["embedding"]
     reranker_model = lock.models["reranker"]
-    native_models.assert_model_service(embedding_model)
-    native_models.assert_model_service(reranker_model)
+    service_root = (
+        None if retrieval_service_root in {None, ""} else Path(str(retrieval_service_root))
+    )
+    native_models.assert_model_service(embedding_model, service_root=service_root)
+    native_models.assert_model_service(reranker_model, service_root=service_root)
     parsed = urlparse(opensearch_url)
     if parsed.hostname is None or parsed.port is None:
         raise ProductionRealHybridError("OpenSearch URL must include a host and port")

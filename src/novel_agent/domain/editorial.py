@@ -73,11 +73,64 @@ class EditorialIssueType(StrEnum):
     STRUCTURE = "structure"
 
 
+class EditorialConstraintSourceKind(StrEnum):
+    WRITING_TASK_FIELD = "writing_task_field"
+    CONTEXT_ITEM = "context_item"
+    # Kept so historical reports remain readable. New Editor output cannot use
+    # this as a constraint source; whole-chapter evidence is ``evidence_scope``.
+    CHAPTER_SCOPE = "chapter_scope"
+
+
+class EditorialEvidenceScope(StrEnum):
+    QUOTE = "quote"
+    CHAPTER = "chapter"
+
+
+class EditorialConstraintSource(DomainModel):
+    """The visible constraint a blocking Editor issue claims to violate."""
+
+    kind: EditorialConstraintSourceKind
+    conflict_reason: _NonEmptyText
+    field_name: _NonEmptyText | None = None
+    context_item_id: StableId | None = None
+
+    @model_validator(mode="after")
+    def validate_source_binding(self) -> EditorialConstraintSource:
+        if self.kind is EditorialConstraintSourceKind.WRITING_TASK_FIELD:
+            if self.field_name is None:
+                raise ValueError("writing-task constraint source requires a field name")
+            if self.context_item_id is not None:
+                raise ValueError("writing-task constraint source cannot name a Context item")
+        elif self.kind is EditorialConstraintSourceKind.CONTEXT_ITEM:
+            if self.context_item_id is None:
+                raise ValueError("context-item constraint source requires a Context item id")
+            if self.field_name is not None:
+                raise ValueError("context-item constraint source cannot name a WritingTask field")
+        elif self.field_name is not None or self.context_item_id is not None:
+            raise ValueError("chapter-scope constraint source cannot bind a field or Context item")
+        return self
+
+
 class EditorialSeverity(StrEnum):
     INFO = "info"
     WARNING = "warning"
     ERROR = "error"
     CRITICAL = "critical"
+
+
+def editorial_issue_is_blocking(
+    *,
+    repairable: bool,
+    structural: bool,
+    severity: EditorialSeverity,
+) -> bool:
+    """Shared host definition of a routing-blocking Editor issue."""
+
+    return (
+        repairable
+        or structural
+        or severity in {EditorialSeverity.ERROR, EditorialSeverity.CRITICAL}
+    )
 
 
 class EditorialTerminalStatus(StrEnum):
@@ -134,6 +187,8 @@ class EditorialIssue(DomainModel):
     location: EditorialLocation | None = None
     repairable: bool = False
     structural: bool = False
+    constraint_source: EditorialConstraintSource | None = None
+    evidence_scope: EditorialEvidenceScope = EditorialEvidenceScope.QUOTE
 
 
 class LocalRepairScope(DomainModel):
@@ -158,10 +213,44 @@ class EditorialRepairHistoryEntry(DomainModel):
     repaired_draft_id: ArtifactId | None = None
 
 
+class RepairedDraft(DomainModel):
+    """A new candidate text produced by one bounded Editor local repair."""
+
+    draft_id: ArtifactId
+    parent_draft_id: ArtifactId
+    repair_report_id: StableId
+    task_contract_id: StableId
+    snapshot_id: StableId
+    context_id: StableId
+    text_artifact: ArtifactRef
+    changed_spans: tuple[DraftSpan, ...] = Field(min_length=1)
+    editor_receipt: AgentExecutionReceipt
+    model_call_record: ModelCallRecord | None = None
+    created_at: datetime
+    candidate_only: Literal[True] = True
+    preserve_verified: Literal[True] = True
+
+    @model_validator(mode="after")
+    def validate_repair_lineage(self) -> RepairedDraft:
+        if self.draft_id == self.parent_draft_id:
+            raise ValueError("Repaired Draft must have a new candidate identity")
+        if self.editor_receipt.agent_type is not AgentType.EDITOR:
+            raise ValueError("Repaired Draft receipt must belong to the Editor")
+        if self.editor_receipt.agent_mode is not AgentMode.LOCAL_REPAIR:
+            raise ValueError("Repaired Draft receipt must be a LOCAL_REPAIR execution")
+        if self.editor_receipt.status is not ExecutionStatus.SUCCEEDED:
+            raise ValueError("Repaired Draft requires a successful Editor receipt")
+        return self
+
+    @property
+    def source_draft_id(self) -> ArtifactId:
+        return self.parent_draft_id
+
+
 class EditorialReviewInput(DomainModel):
     """Minimum trusted input for an independent read-only Editor review."""
 
-    draft: DraftArtifact
+    draft: DraftArtifact | RepairedDraft
     writing_task: WritingTaskContract
     context: WriterContextSnapshot
     prior_repair_history: tuple[EditorialRepairHistoryEntry, ...] = ()
@@ -170,17 +259,46 @@ class EditorialReviewInput(DomainModel):
     def validate_same_candidate_task(self) -> EditorialReviewInput:
         if self.context.task_contract != self.writing_task.contract_id.root:
             raise ValueError("Editor context and WritingTaskContract belong to different tasks")
-        basis = self.draft.basis
-        if (
-            basis.base_commit != self.context.base_commit
-            or basis.snapshot_id != self.context.snapshot_id
-            or basis.context_id != self.context.context_id
-        ):
-            raise ValueError("Editor Draft and Context belong to different snapshots")
+        if isinstance(self.draft, DraftArtifact):
+            basis = self.draft.basis
+            if (
+                basis.base_commit != self.context.base_commit
+                or basis.snapshot_id != self.context.snapshot_id
+                or basis.context_id != self.context.context_id
+            ):
+                raise ValueError("Editor Draft and Context belong to different snapshots")
+        else:
+            self._validate_repaired_lineage()
         draft_ids = tuple(item.draft_id for item in self.prior_repair_history)
         if any(item_id == self.draft.draft_id for item_id in draft_ids):
             raise ValueError("Editor repair history cannot contain the current Draft")
         return self
+
+    def _validate_repaired_lineage(self) -> None:
+        repaired = self.draft
+        if not isinstance(repaired, RepairedDraft):
+            raise ValueError("Editor repaired-candidate lineage requires a RepairedDraft")
+        receipt = repaired.editor_receipt
+        if receipt.base_commit != self.context.base_commit:
+            raise ValueError("Editor Repaired Draft and Context belong to different commits")
+        if repaired.task_contract_id != self.writing_task.contract_id:
+            raise ValueError("Editor Repaired Draft belongs to a different WritingTask")
+        if (
+            repaired.snapshot_id != self.context.snapshot_id
+            or repaired.context_id != self.context.context_id
+        ):
+            raise ValueError("Editor Repaired Draft and Context belong to different snapshots")
+        parent_entries = tuple(
+            entry
+            for entry in self.prior_repair_history
+            if entry.draft_id == repaired.parent_draft_id
+            and entry.report_id == repaired.repair_report_id
+            and entry.repaired_draft_id == repaired.draft_id
+        )
+        if not parent_entries:
+            raise ValueError(
+                "Editor Repaired Draft is missing a matching parent candidate and repair report"
+            )
 
 
 class EditorialIssueDraft(DomainModel):
@@ -194,6 +312,17 @@ class EditorialIssueDraft(DomainModel):
     block_hint: _NonEmptyText | None = None
     repairable: bool = False
     structural: bool = False
+    constraint_source: EditorialConstraintSource | None = None
+    evidence_scope: EditorialEvidenceScope = EditorialEvidenceScope.QUOTE
+
+    @model_validator(mode="after")
+    def validate_evidence_scope(self) -> EditorialIssueDraft:
+        if (
+            self.evidence_scope is EditorialEvidenceScope.CHAPTER
+            and self.evidence_quote is not None
+        ):
+            raise ValueError("chapter-scoped issue cannot invent a local evidence quote")
+        return self
 
 
 class EditorReviewPayload(DomainModel):
@@ -230,6 +359,28 @@ class EditorReviewPayload(DomainModel):
         verdict = raw.get("verdict")
         issues = raw.get("issues", ())
         unresolved_needs = raw.get("unresolved_needs", ())
+        if isinstance(issues, tuple):
+            normalized_issues: list[object] = []
+            for issue in issues:
+                if not isinstance(issue, Mapping):
+                    normalized_issues.append(issue)
+                    continue
+                item = dict(issue)
+                quote = item.get("evidence_quote")
+                scope = item.get("evidence_scope")
+                if (
+                    not quote
+                    and scope in {None, EditorialEvidenceScope.QUOTE, "quote"}
+                    and (
+                        item.get("structural") is True
+                        or verdict
+                        in {EditorialVerdict.MAJOR_REWRITE, EditorialVerdict.MAJOR_REWRITE.value}
+                    )
+                ):
+                    item["evidence_scope"] = EditorialEvidenceScope.CHAPTER.value
+                normalized_issues.append(item)
+            raw["issues"] = tuple(normalized_issues)
+            issues = raw["issues"]
         if (
             verdict not in {EditorialVerdict.PASS, EditorialVerdict.PASS.value}
             and not issues
@@ -466,37 +617,6 @@ class EditorialReport(DomainModel):
         return self
 
 
-class RepairedDraft(DomainModel):
-    """A new candidate text produced by one bounded Editor local repair."""
-
-    draft_id: ArtifactId
-    parent_draft_id: ArtifactId
-    repair_report_id: StableId
-    text_artifact: ArtifactRef
-    changed_spans: tuple[DraftSpan, ...] = Field(min_length=1)
-    editor_receipt: AgentExecutionReceipt
-    model_call_record: ModelCallRecord | None = None
-    created_at: datetime
-    candidate_only: Literal[True] = True
-    preserve_verified: Literal[True] = True
-
-    @model_validator(mode="after")
-    def validate_repair_lineage(self) -> RepairedDraft:
-        if self.draft_id == self.parent_draft_id:
-            raise ValueError("Repaired Draft must have a new candidate identity")
-        if self.editor_receipt.agent_type is not AgentType.EDITOR:
-            raise ValueError("Repaired Draft receipt must belong to the Editor")
-        if self.editor_receipt.agent_mode is not AgentMode.LOCAL_REPAIR:
-            raise ValueError("Repaired Draft receipt must be a LOCAL_REPAIR execution")
-        if self.editor_receipt.status is not ExecutionStatus.SUCCEEDED:
-            raise ValueError("Repaired Draft requires a successful Editor receipt")
-        return self
-
-    @property
-    def source_draft_id(self) -> ArtifactId:
-        return self.parent_draft_id
-
-
 class CuratorChangeObservation(DomainModel):
     """A minimal independent observation extracted from the repaired/current Draft."""
 
@@ -642,6 +762,9 @@ __all__ = [
     "DraftSpan",
     "EditorRepairPayload",
     "EditorReviewPayload",
+    "EditorialConstraintSource",
+    "EditorialConstraintSourceKind",
+    "EditorialEvidenceScope",
     "EditorialIssue",
     "EditorialIssueDraft",
     "EditorialIssueType",
@@ -657,4 +780,5 @@ __all__ = [
     "ReconciliationComparison",
     "ReconciliationResult",
     "RepairedDraft",
+    "editorial_issue_is_blocking",
 ]

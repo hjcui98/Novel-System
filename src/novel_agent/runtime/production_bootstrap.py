@@ -364,6 +364,7 @@ def production_configuration_fingerprint(
     skill_pins: tuple[ArtifactId, ...],
     endpoints: tuple[RegisteredModelEndpoint, ...],
     retrieval_backend_profile: str,
+    retrieval_service_root: str | None = None,
     reranker_declared: bool,
     reranker_resolved: bool,
     profile_root_hash: ArtifactId | None,
@@ -432,6 +433,11 @@ def production_configuration_fingerprint(
             "profile": retrieval_backend_profile,
             "reranker_declared": reranker_declared,
             "reranker_resolved": reranker_resolved,
+            **(
+                {}
+                if retrieval_service_root in {None, ""}
+                else {"service_root": str(Path(str(retrieval_service_root)).resolve())}
+            ),
         },
         "profile_root_hash": None if profile_root_hash is None else profile_root_hash.root,
         "settlement_policy": settlement_policy_fingerprint.root,
@@ -1172,6 +1178,11 @@ def _resolve_production_retrieval(
             opensearch_url=context.opensearch_url or "",
             embedding_url=context.embedding_url or "",
             reranker_url=context.reranker_url or "",
+            retrieval_service_root=(
+                None
+                if context.retrieval_service_root is None
+                else str(context.retrieval_service_root)
+            ),
         )
         return assembled.backend, assembled.reranker, assembled.projection_builder
     return (
@@ -1265,6 +1276,9 @@ def freeze_production_attestation(
         skill_pins=skill_pins,
         endpoints=endpoints,
         retrieval_backend_profile=context.retrieval_backend_profile,
+        retrieval_service_root=(
+            None if context.retrieval_service_root is None else str(context.retrieval_service_root)
+        ),
         reranker_declared=spec.reranker_required,
         reranker_resolved=reranker_resolved,
         profile_root_hash=profile_root_hash,
@@ -1495,6 +1509,9 @@ def build_production_assembly(context: ProductionAssemblyContext) -> ProductionR
         skill_pins=skill_pins,
         endpoints=model_endpoints,
         retrieval_backend_profile=context.retrieval_backend_profile,
+        retrieval_service_root=(
+            None if context.retrieval_service_root is None else str(context.retrieval_service_root)
+        ),
         reranker_declared=spec.reranker_required,
         reranker_resolved=context.reranker is not None,
         profile_root_hash=profile_root_hash,

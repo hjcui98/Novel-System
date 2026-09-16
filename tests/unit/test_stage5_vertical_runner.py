@@ -3,6 +3,8 @@ from __future__ import annotations
 import asyncio
 from typing import cast
 
+import pytest
+
 from novel_agent.domain.creative_runtime import (
     AutomationMode,
     CreativeRunPolicy,
@@ -11,7 +13,13 @@ from novel_agent.domain.creative_runtime import (
     CreativeRunTerminal,
 )
 from novel_agent.domain.ids import CommitId, ProjectId, RunId, TaskId
-from novel_agent.domain.runtime import TaskKind, TaskPurpose, TaskRecord, TaskStatus
+from novel_agent.domain.runtime import (
+    FailureClass,
+    TaskKind,
+    TaskPurpose,
+    TaskRecord,
+    TaskStatus,
+)
 from novel_agent.domain.stage5_evaluation import VerticalRunStatus
 from novel_agent.ports.creative_runtime import RuntimeTaskReader
 from novel_agent.runtime.creative_dispatcher import CreativeDispatcher
@@ -606,3 +614,166 @@ def test_stale_zero_cursor_is_normalized_from_committed_projections() -> None:
     assert report.requested_current_chapter == 0
     assert report.current_chapter == 56
     assert report.completed_chapters == (56,)
+
+
+def test_request_from_tasks_uses_committed_frontier_not_pending_chapter() -> None:
+    policy = CreativeRunPolicy(
+        automation_mode=AutomationMode.AUTO,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        auto_accept_plan=True,
+        auto_accept_draft=True,
+    )
+    pending = TaskRecord(
+        task_id=TaskId("task.vertical.pending.21"),
+        run_id=RunId("run.vertical"),
+        project_id=ProjectId("project.vertical"),
+        kind=TaskKind.DRAFT_CANDIDATE,
+        task_revision=1,
+        status=TaskStatus.READY,
+        basis_commit=BASE,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        chapter_index=21,
+        target_chapters=21,
+    )
+    reconstructed = VerticalCreativeRunner.request_from_tasks(
+        project_id=ProjectId("project.vertical"),
+        run_id=RunId("run.vertical"),
+        policy=policy,
+        tasks=(pending,),
+    )
+    assert reconstructed.current_chapter == 0
+    assert reconstructed.target_chapters == 21
+
+    committed = TaskRecord(
+        task_id=TaskId("task.vertical.chapter.20.projection"),
+        run_id=RunId("run.vertical"),
+        project_id=ProjectId("project.vertical"),
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        task_revision=1,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=FINAL,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        chapter_index=20,
+        target_chapters=21,
+        projection_after="draft",
+    )
+    continued = VerticalCreativeRunner.request_from_tasks(
+        project_id=ProjectId("project.vertical"),
+        run_id=RunId("run.vertical"),
+        policy=policy,
+        tasks=(committed, pending),
+    )
+    assert continued.current_chapter == 20
+    assert continued.target_chapters == 21
+
+    reached = TaskRecord(
+        task_id=TaskId("task.vertical.chapter.21.projection"),
+        run_id=RunId("run.vertical"),
+        project_id=ProjectId("project.vertical"),
+        kind=TaskKind.PROJECTION_FRESHNESS,
+        task_revision=1,
+        status=TaskStatus.SUCCEEDED,
+        basis_commit=FINAL,
+        policy_hash=HASH,
+        permission_hash=HASH,
+        chapter_index=21,
+        target_chapters=21,
+        projection_after="draft",
+    )
+    with pytest.raises(RuntimeError, match="already reached its target chapter"):
+        VerticalCreativeRunner.request_from_tasks(
+            project_id=ProjectId("project.vertical"),
+            run_id=RunId("run.vertical"),
+            policy=policy,
+            tasks=(reached,),
+        )
+
+
+def test_advance_slice_recovers_then_dispatches_like_a_single_dispatch_slice() -> None:
+    recovered = _result(CreativeRunTerminal.PROGRESSED, BASE)
+    dispatched = _result(CreativeRunTerminal.WAITING_RETRY, FINAL)
+
+    class _Runtime:
+        def recover_boundary(self, task_id: TaskId) -> CreativeRunResult | None:
+            if task_id == TaskId("task.vertical.blocked"):
+                return recovered
+            return None
+
+        def start(self, request: CreativeRunRequest) -> CreativeRunResult:
+            raise AssertionError("advance must not start a new run")
+
+    class _Dispatcher:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
+            self.calls += 1
+            assert max_tasks == 2
+            return (dispatched,)
+
+    class _Tasks:
+        def __init__(self) -> None:
+            self.calls = 0
+
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
+            self.calls += 1
+            blocked = TaskRecord(
+                task_id=TaskId("task.vertical.blocked"),
+                run_id=run_id,
+                project_id=ProjectId("project.vertical"),
+                kind=TaskKind.DRAFT_CANDIDATE,
+                task_revision=1,
+                status=TaskStatus.BLOCKED,
+                basis_commit=BASE,
+                policy_hash=HASH,
+                permission_hash=HASH,
+                chapter_index=21,
+                target_chapters=21,
+                block_cause=FailureClass.LEAF_REVIEW_REQUIRED.value,
+            )
+            ready = _ready_task("task.vertical.ready")
+            if self.calls == 1:
+                return (blocked, ready)
+            return (ready,)
+
+    def _runner() -> VerticalCreativeRunner:
+        return VerticalCreativeRunner(
+            runtime=cast(CreativeRuntimeService, _Runtime()),
+            dispatcher=cast(CreativeDispatcher, _Dispatcher()),
+            tasks=cast(RuntimeTaskReader, _Tasks()),
+        )
+
+    dispatch_report = asyncio.run(_runner().run(_request(), max_tasks=2, max_slices=1))
+    advance_report = asyncio.run(_runner().advance_slice(_request(), max_tasks=2))
+
+    assert dispatch_report.runtime_results[0] is recovered
+    assert advance_report.runtime_results[0] is recovered
+    assert dispatch_report.runtime_results[-1].terminal is CreativeRunTerminal.WAITING_RETRY
+    assert advance_report.runtime_results[-1].terminal is CreativeRunTerminal.WAITING_RETRY
+
+
+def test_advance_slice_does_not_wrap_an_empty_run_as_succeeded() -> None:
+    class _Runtime:
+        def start(self, request: CreativeRunRequest) -> CreativeRunResult:
+            raise AssertionError("advance must not start a new run")
+
+    class _Dispatcher:
+        async def run_bounded(self, *, max_tasks: int) -> tuple[CreativeRunResult, ...]:
+            raise AssertionError("advance must not invent READY work")
+
+    class _Tasks:
+        def list_run(self, run_id: RunId) -> tuple[TaskRecord, ...]:
+            return ()
+
+    runner = VerticalCreativeRunner(
+        runtime=cast(CreativeRuntimeService, _Runtime()),
+        dispatcher=cast(CreativeDispatcher, _Dispatcher()),
+        tasks=cast(RuntimeTaskReader, _Tasks()),
+    )
+    report = asyncio.run(runner.advance_slice(_request(), max_tasks=1))
+    assert report.status is VerticalRunStatus.WAITING
+    assert report.runtime_results == ()
+    assert report.dispatch_slices == 0

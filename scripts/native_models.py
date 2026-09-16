@@ -333,8 +333,17 @@ def configured_port(key: str) -> int:
     return port
 
 
-def _pid_path(key: str) -> Path:
-    return RUN_ROOT / f"{key}.json"
+def _pid_path(key: str, *, service_root: Path | None = None) -> Path:
+    run_root = (
+        RUN_ROOT if service_root is None else Path(service_root) / "tmp" / "native-models" / "run"
+    )
+    return run_root / f"{key}.json"
+
+
+def _service_script(service_root: Path | None = None) -> Path:
+    if service_root is None:
+        return SERVICE_SCRIPT
+    return Path(service_root) / "scripts" / "retrieval_model_service.py"
 
 
 def start_model(model: LockedModel) -> None:
@@ -434,7 +443,12 @@ def _load_pid_record(path: Path) -> dict[str, Any]:
         raise NativeInfraError(f"invalid model PID record: {path}") from error
 
 
-def _record_matches_live_process(model: LockedModel, record: dict[str, Any]) -> bool:
+def _record_matches_live_process(
+    model: LockedModel,
+    record: dict[str, Any],
+    *,
+    service_root: Path | None = None,
+) -> bool:
     try:
         pid = int(record["pid"])
         expected_start = int(record["start_time"])
@@ -448,7 +462,7 @@ def _record_matches_live_process(model: LockedModel, record: dict[str, Any]) -> 
             process_owner(pid) == os.getuid()
             and process_start_time(pid) == expected_start
             and process_command(pid) == command
-            and str(SERVICE_SCRIPT) in command
+            and str(_service_script(service_root)) in command
             and model.model_id in command
             and model.revision in command
         )
@@ -478,12 +492,16 @@ def health_payload(model: LockedModel) -> dict[str, Any]:
     return payload
 
 
-def assert_model_service(model: LockedModel) -> dict[str, Any]:
-    pid_path = _pid_path(model.key)
+def assert_model_service(
+    model: LockedModel,
+    *,
+    service_root: Path | None = None,
+) -> dict[str, Any]:
+    pid_path = _pid_path(model.key, service_root=service_root)
     if not pid_path.exists():
         raise NativeInfraError(f"{model.key} model PID record is missing")
     record = _load_pid_record(pid_path)
-    if not _record_matches_live_process(model, record):
+    if not _record_matches_live_process(model, record, service_root=service_root):
         raise NativeInfraError(f"{model.key} model process identity does not match its PID record")
     return health_payload(model)
 

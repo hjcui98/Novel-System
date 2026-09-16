@@ -67,6 +67,11 @@ def test_local_repair_treats_nonstructural_blocking_issues_as_repairable() -> No
                         "description": "The draft contradicts the previous chapter ending.",
                         "evidence_quote": "he instantly understood the whole meridian map",
                         "structural": False,
+                        "constraint_source": {
+                            "kind": "writing_task_field",
+                            "field_name": "chapter_goal",
+                            "conflict_reason": "The draft contradicts the previous chapter ending.",
+                        },
                     }
                 ],
                 "repair_instructions": [

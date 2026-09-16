@@ -47,6 +47,7 @@ from novel_agent.domain.generation import (
     WriterContextItem,
     WriterContextSnapshot,
     WriterMemoryRequest,
+    WriterSidecar,
     WriterTurnAction,
     WriterTurnOutput,
     WriterWorkPlan,
@@ -247,6 +248,7 @@ def _request(artifacts: ArtifactRepository, suffix: str) -> WritingLoopRequest:
         required_beats=("Observe the gate.", "Redirect moonlight."),
         mandatory_constraints=("Do not force the gate with the injured arm.",),
         forbidden_reveals=("Do not reveal the tower's final secret.",),
+        style_requirements=("Keep the entrance action precise and visible.",),
         length_policy=WritingLengthPolicy(
             minimum_characters=20,
             target_characters=100,
@@ -355,6 +357,13 @@ def _editor_responses(route: EditorialVerdict, text: str) -> tuple[str, ...]:
                     "occurrence": 0,
                     "repairable": True,
                     "structural": False,
+                    "constraint_source": {
+                        "kind": "writing_task_field",
+                        "field_name": "style_requirements",
+                        "conflict_reason": (
+                            "The entrance action is too vague for the style requirement."
+                        ),
+                    },
                 }
             ],
             "repair_instructions": ["Clarify the action without changing the beat."],
@@ -375,6 +384,14 @@ def _editor_responses(route: EditorialVerdict, text: str) -> tuple[str, ...]:
                 "description": "The entrance action needs a new structure.",
                 "repairable": False,
                 "structural": True,
+                "evidence_scope": "chapter",
+                "constraint_source": {
+                    "kind": "writing_task_field",
+                    "field_name": "chapter_goal",
+                    "conflict_reason": (
+                        "The chapter structure does not execute the required entrance beat."
+                    ),
+                },
             }
         ],
         "rewrite_targets": ["Rebuild the entrance around reflected moonlight."],
@@ -823,6 +840,12 @@ def test_explicit_major_rewrite_budget_uses_second_reviewed_attempt(
                         "description": target,
                         "repairable": False,
                         "structural": True,
+                        "evidence_scope": "chapter",
+                        "constraint_source": {
+                            "kind": "writing_task_field",
+                            "field_name": "chapter_goal",
+                            "conflict_reason": target,
+                        },
                     }
                 ],
                 "rewrite_targets": [target],
@@ -912,6 +935,13 @@ def test_explicit_two_local_repairs_retry_an_unchanged_candidate(
                     "evidence_quote": "opens the gate",
                     "repairable": True,
                     "structural": False,
+                    "constraint_source": {
+                        "kind": "writing_task_field",
+                        "field_name": "style_requirements",
+                        "conflict_reason": (
+                            "The entrance action is too vague for the style requirement."
+                        ),
+                    },
                 }
             ],
             "repair_instructions": ["Clarify the action without changing the beat."],
@@ -1122,7 +1152,11 @@ def test_explicit_two_major_rewrites_still_fail_closed_after_second_review(
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "two-major-rewrites-fail"))
     base_request = _with_mode_skill(_request(artifacts, "two-major-rewrites-fail"))
     request = base_request.model_copy(
-        update={"budgets": base_request.budgets.model_copy(update={"max_major_rewrites": 2})}
+        update={
+            "budgets": base_request.budgets.model_copy(
+                update={"max_major_rewrites": 2, "max_post_draft_model_calls": 12}
+            )
+        }
     )
     review = json.dumps(
         {
@@ -1134,6 +1168,12 @@ def test_explicit_two_major_rewrites_still_fail_closed_after_second_review(
                     "description": "The scene remains structurally incomplete.",
                     "repairable": False,
                     "structural": True,
+                    "evidence_scope": "chapter",
+                    "constraint_source": {
+                        "kind": "writing_task_field",
+                        "field_name": "chapter_goal",
+                        "conflict_reason": "The scene remains structurally incomplete.",
+                    },
                 }
             ],
             "rewrite_targets": ["Write the complete scene."],
@@ -1376,7 +1416,7 @@ def test_local_repair_slice_records_the_local_review_stage(
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "local-slice"))
     request = _request(artifacts, "local-slice")
     initial = request.model_copy(
-        update={"budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 1})}
+        update={"budgets": request.budgets.model_copy(update={"max_post_draft_model_calls": 2})}
     )
     loop, model_request, _ = _loop(
         tmp_path,
@@ -1560,6 +1600,271 @@ def test_a_restart_inside_a_dispatched_repair_returns_to_that_repair(
         )
         == 1
     )
+
+
+def _major_then_local_responses(initial: str, rewrite: str) -> tuple[str, ...]:
+    major = _editor_responses(EditorialVerdict.MAJOR_REWRITE, initial)[0]
+    passing = EditorReviewPayload(verdict=EditorialVerdict.PASS).model_dump_json()
+    quote = "opens the gate"
+    local = json.dumps(
+        {
+            "verdict": "LOCAL_REPAIR",
+            "issues": [
+                {
+                    "issue_type": EditorialIssueType.STYLE.value,
+                    "severity": EditorialSeverity.ERROR.value,
+                    "description": "Clarify the entrance action.",
+                    "evidence_quote": quote,
+                    "occurrence": 0,
+                    "repairable": True,
+                    "structural": False,
+                    "constraint_source": {
+                        "kind": "writing_task_field",
+                        "field_name": "style_requirements",
+                        "conflict_reason": "The rewritten entrance is still too vague.",
+                    },
+                }
+            ],
+            "repair_instructions": ["Clarify the action without changing the beat."],
+            "preserve_requirements": ["Keep the injury constraint."],
+        }
+    )
+    repaired = rewrite.replace(quote, "opens it anew")
+    return (
+        major,
+        local,
+        EditorRepairPayload(repaired_text=repaired).model_dump_json(),
+        passing,
+    )
+
+
+def test_major_then_local_repair_converges_to_the_repaired_candidate(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "major-then-local"))
+    base = _with_mode_skill(_request(artifacts, "major-then-local"))
+    request = base.model_copy(
+        update={
+            "budgets": base.budgets.model_copy(
+                update={
+                    "max_local_repairs": 1,
+                    "max_major_rewrites": 1,
+                    "max_post_draft_model_calls": 12,
+                }
+            )
+        }
+    )
+    initial = _INITIAL_DRAFT_TEXT
+    rewrite = "Lin studies first, then redirects moonlight and opens the gate safely."
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.MAJOR_REWRITE,
+        artifact_repository=artifacts,
+        writer_turns=(_writer_turn(initial), _writer_turn(rewrite)),
+        editor_responses=_major_then_local_responses(initial, rewrite),
+    )
+    result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+
+    assert result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert result.rewritten_draft is not None
+    assert result.repaired_draft is not None
+    assert result.final_candidate_id == result.repaired_draft.draft_id
+    assert result.editorial_reports[-1].draft_id == result.final_candidate_id
+    assert result.repaired_draft.parent_draft_id == result.rewritten_draft.draft_id
+    assert result.rewritten_draft.parent_draft_id == result.initial_draft.draft_id
+    assert artifacts.read_verified(result.final_text_artifact).decode() == rewrite.replace(
+        "opens the gate", "opens it anew"
+    )
+    assert len(result.editorial_reports) == 3
+    assert result.observation is not None
+    assert result.observation.draft_id == result.final_candidate_id
+    assert result.reconciliation is not None
+    assert result.reconciliation.draft_id == result.final_candidate_id
+
+
+def test_local_then_major_rewrite_converges_to_the_rewritten_candidate(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "local-then-major"))
+    base = _with_mode_skill(_request(artifacts, "local-then-major"))
+    request = base.model_copy(
+        update={
+            "budgets": base.budgets.model_copy(
+                update={
+                    "max_local_repairs": 1,
+                    "max_major_rewrites": 1,
+                    "max_post_draft_model_calls": 12,
+                }
+            )
+        }
+    )
+    initial = _INITIAL_DRAFT_TEXT
+    rewrite = "Lin studies first, then redirects moonlight to open the gate safely."
+    local_review, repair, _ = _editor_responses(EditorialVerdict.LOCAL_REPAIR, initial)
+    major, passing = _editor_responses(EditorialVerdict.MAJOR_REWRITE, initial)
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.MAJOR_REWRITE,
+        artifact_repository=artifacts,
+        writer_turns=(_writer_turn(initial), _writer_turn(rewrite)),
+        editor_responses=(local_review, repair, major, passing),
+    )
+    result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+
+    assert result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert result.repaired_draft is not None
+    assert result.rewritten_draft is not None
+    assert result.final_candidate_id == result.rewritten_draft.draft_id
+    assert result.editorial_reports[-1].draft_id == result.final_candidate_id
+    assert result.rewritten_draft.parent_draft_id == result.repaired_draft.draft_id
+    assert artifacts.read_verified(result.final_text_artifact).decode() == rewrite
+
+
+def test_two_local_repairs_converge_without_treating_major_quota_as_global(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "two-local-mix"))
+    base = _request(artifacts, "two-local-mix")
+    request = base.model_copy(
+        update={
+            "budgets": base.budgets.model_copy(
+                update={
+                    "max_local_repairs": 2,
+                    "max_major_rewrites": 0,
+                    "max_post_draft_model_calls": 12,
+                }
+            )
+        }
+    )
+    initial = _INITIAL_DRAFT_TEXT
+    first_review, first_repair, _ = _editor_responses(EditorialVerdict.LOCAL_REPAIR, initial)
+    first_repaired = initial.replace("opens the gate", "opens it anew")
+    second_review = json.dumps(
+        {
+            "verdict": "LOCAL_REPAIR",
+            "issues": [
+                {
+                    "issue_type": EditorialIssueType.STYLE.value,
+                    "severity": EditorialSeverity.ERROR.value,
+                    "description": "Clarify the repaired entrance.",
+                    "evidence_quote": "opens it anew",
+                    "occurrence": 0,
+                    "repairable": True,
+                    "structural": False,
+                    "constraint_source": {
+                        "kind": "writing_task_field",
+                        "field_name": "style_requirements",
+                        "conflict_reason": "The repaired phrase is still imprecise.",
+                    },
+                }
+            ],
+            "repair_instructions": ["Make the repaired entrance exact."],
+            "preserve_requirements": ["Keep the injury constraint."],
+        }
+    )
+    second_repaired = first_repaired.replace("opens it anew", "opens the inner latch")
+    passing = EditorReviewPayload(verdict=EditorialVerdict.PASS).model_dump_json()
+    loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.LOCAL_REPAIR,
+        artifact_repository=artifacts,
+        editor_responses=(
+            first_review,
+            first_repair,
+            second_review,
+            EditorRepairPayload(repaired_text=second_repaired).model_dump_json(),
+            passing,
+        ),
+    )
+    result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
+
+    assert result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert result.repaired_draft is not None
+    assert result.final_candidate_id == result.repaired_draft.draft_id
+    assert artifacts.read_verified(result.final_text_artifact).decode() == second_repaired
+    assert (
+        len(
+            _task_events(
+                repositories,
+                request.run_id,
+                request.task_id,
+                RunEventType.EDITOR_REPAIR_SETTLED,
+            )
+        )
+        == 2
+    )
+    assert result.editorial_reports[-1].draft_id == result.final_candidate_id
+
+
+def test_mixed_repair_resumes_after_rewrite_without_repaying_the_rewrite(
+    tmp_path: Path,
+    repositories: tuple[RunEventLogRepository, RunCheckpointRepository],
+) -> None:
+    artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "mixed-resume"))
+    base = _with_mode_skill(_request(artifacts, "mixed-resume"))
+    request = base.model_copy(
+        update={
+            "resume_checkpoint_ref": None,
+            "budgets": base.budgets.model_copy(
+                update={
+                    "max_local_repairs": 1,
+                    "max_major_rewrites": 1,
+                    "max_post_draft_model_calls": 12,
+                }
+            ),
+        }
+    )
+    initial = _INITIAL_DRAFT_TEXT
+    rewrite = "Lin studies first, then redirects moonlight and opens the gate safely."
+    major = _editor_responses(EditorialVerdict.MAJOR_REWRITE, initial)[0]
+    first_loop, model_request, _ = _loop(
+        tmp_path,
+        repositories,
+        request,
+        EditorialVerdict.MAJOR_REWRITE,
+        artifact_repository=artifacts,
+        writer_turns=(_writer_turn(initial), _writer_turn(rewrite)),
+        editor_responses=(major, "not a review payload"),
+    )
+    first = asyncio.run(first_loop.execute(request, model_request, cast(Any, object())))
+    assert first.status is WritingLoopTerminalStatus.WRITER_FAILED
+    frontiers = _repair_frontiers(artifacts, first.artifacts)
+    assert [item[1].repair_stage for item in frontiers][-1] == "rewrite_review"
+    frontier_ref, frontier = frontiers[-1]
+    assert frontier.rewritten_draft is not None
+    assert frontier.major_rewrites_used == 1
+    local_review, repair, passing = _editor_responses(EditorialVerdict.LOCAL_REPAIR, rewrite)
+    resumed = request.model_copy(update={"resume_checkpoint_ref": frontier_ref})
+    second_loop, second_request, _ = _loop(
+        tmp_path,
+        repositories,
+        resumed,
+        EditorialVerdict.MAJOR_REWRITE,
+        artifact_repository=artifacts,
+        writer_turns=(_writer_turn(initial), _writer_turn(rewrite)),
+        editor_responses=(local_review, repair, passing),
+    )
+    second = asyncio.run(second_loop.execute(resumed, second_request, cast(Any, object())))
+    assert second.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
+    assert second.final_candidate_id == second.repaired_draft.draft_id
+    assert second.rewritten_draft is not None
+    assert second.repaired_draft.parent_draft_id == second.rewritten_draft.draft_id
+    writer_turns = _task_events(
+        repositories,
+        request.run_id,
+        request.task_id,
+        RunEventType.WRITER_TURN_SETTLED,
+    )
+    assert len(writer_turns) == 2
 
 
 def test_stage3_public_lazy_exports_are_resolvable() -> None:
@@ -1820,13 +2125,33 @@ def test_long_form_length_recovery_uses_complete_replacement_not_appended_fragme
     short = "短稿在这里提前结束。"
     replacement = "他压住呼吸，重新校准每一次挥刀的轨迹。" * 55  # noqa: RUF001
     assert 1_000 <= len(replacement) <= 1_300
+    dropped_hint = DeclaredMemoryHint(
+        subject_hint="abandoned-event",
+        change_kind=MemoryHintChangeKind.CHANGE,
+        predicate_hint="state",
+        value_hint="removed-from-replacement",
+        evidence_quote="abandoned",
+        confidence=0.9,
+    )
+    kept_hint = DeclaredMemoryHint(
+        subject_hint="replacement-event",
+        change_kind=MemoryHintChangeKind.CHANGE,
+        predicate_hint="state",
+        value_hint="present-in-final",
+        evidence_quote="挥刀",
+        confidence=0.9,
+    )
+    short_turn = _writer_turn(short).model_copy(update={"declared_memory_hints": (dropped_hint,)})
+    replacement_turn = _writer_turn(replacement).model_copy(
+        update={"declared_memory_hints": (kept_hint,)}
+    )
     loop, model_request, _ = _loop(
         tmp_path,
         repositories,
         request,
         EditorialVerdict.PASS,
         artifact_repository=artifacts,
-        writer_turns=(_writer_turn(short), _writer_turn(replacement)),
+        writer_turns=(short_turn, replacement_turn),
     )
 
     result = asyncio.run(loop.execute(request, model_request, cast(Any, object())))
@@ -1834,6 +2159,11 @@ def test_long_form_length_recovery_uses_complete_replacement_not_appended_fragme
     assert result.status is WritingLoopTerminalStatus.DRAFT_CANDIDATE_READY
     assert result.final_text_artifact is not None
     assert artifacts.read_verified(result.final_text_artifact).decode() == replacement
+    assert result.initial_draft is not None
+    sidecar = WriterSidecar.model_validate_json(
+        artifacts.read_verified(result.initial_draft.sidecar_artifact)
+    )
+    assert sidecar.declared_memory_hints == replacement_turn.declared_memory_hints
     endpoint = cast(
         SequenceEndpoint,
         loop._cognition._gateway.endpoint_adapter(ModelRole.BATCH_TEST),

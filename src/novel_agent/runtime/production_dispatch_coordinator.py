@@ -73,6 +73,7 @@ class ProductionRunDescriptor:
     opensearch_url: str | None = None
     embedding_url: str | None = None
     reranker_url: str | None = None
+    retrieval_service_root: Path | None = None
 
     def retrieval_options(self) -> dict[str, str | None]:
         """The committed retrieval deployment, or empty when it was not recorded."""
@@ -82,6 +83,9 @@ class ProductionRunDescriptor:
             "opensearch_url": self.opensearch_url,
             "embedding_url": self.embedding_url,
             "reranker_url": self.reranker_url,
+            "retrieval_service_root": (
+                None if self.retrieval_service_root is None else str(self.retrieval_service_root)
+            ),
         }
 
     def __post_init__(self) -> None:
@@ -158,6 +162,7 @@ class ProductionRunDescriptor:
             opensearch_url=_optional_str(payload.get("opensearch_url")),
             embedding_url=_optional_str(payload.get("embedding_url")),
             reranker_url=_optional_str(payload.get("reranker_url")),
+            retrieval_service_root=_optional_path(payload.get("retrieval_service_root"), base_dir),
         )
 
 
@@ -279,6 +284,7 @@ class ProductionDispatchCoordinator:
         opensearch_url: str | None = None,
         embedding_url: str | None = None,
         reranker_url: str | None = None,
+        retrieval_service_root: str | None = None,
     ) -> None:
         if not runs:
             raise ValueError("production dispatch requires at least one run")
@@ -323,6 +329,9 @@ class ProductionDispatchCoordinator:
         self._opensearch_url = opensearch_url
         self._embedding_url = embedding_url
         self._reranker_url = reranker_url
+        self._retrieval_service_root = (
+            None if retrieval_service_root in {None, ""} else Path(str(retrieval_service_root))
+        )
         self._assemblies: dict[tuple[ProjectId, RunId], ProductionRuntimeAssembly] = {}
         self._assembly_errors: dict[tuple[ProjectId, RunId], Exception] = {}
 
@@ -356,6 +365,9 @@ class ProductionDispatchCoordinator:
             opensearch_url=self._opensearch_url,
             embedding_url=self._embedding_url,
             reranker_url=self._reranker_url,
+            retrieval_service_root=(
+                self._retrieval_service_root or descriptor.retrieval_service_root
+            ),
         )
 
     def _ensure_assemblies(self) -> None:
@@ -417,18 +429,11 @@ class ProductionDispatchCoordinator:
             raise RunConfigurationChangedError(
                 frozen=drifted.policy_hash, observed=descriptor.policy.policy_hash
             )
-        first = min(matching, key=lambda task: (task.chapter_index, task.task_id.root))
-        return CreativeRunRequest(
-            run_id=descriptor.run_id,
+        return VerticalCreativeRunner.request_from_tasks(
             project_id=descriptor.project_id,
-            basis_commit=first.basis_commit,
-            basis_snapshot=first.basis_snapshot,
+            run_id=descriptor.run_id,
             policy=descriptor.policy,
-            input_artifact_refs=first.input_artifact_refs,
-            continuation_artifact_refs=first.terminal_artifact_refs,
-            current_chapter=first.chapter_index,
-            target_chapters=first.target_chapters,
-            plan_level=first.plan_level,
+            tasks=matching,
         )
 
     async def _run_project(
@@ -687,6 +692,16 @@ def _optional_str(value: object) -> str | None:
         return None
     text = str(value).strip()
     return text or None
+
+
+def _optional_path(value: object, base_dir: Path) -> Path | None:
+    text = _optional_str(value)
+    if text is None:
+        return None
+    path = Path(text)
+    if not path.is_absolute():
+        path = base_dir / path
+    return path
 
 
 def _optional_float(value: object) -> float | None:

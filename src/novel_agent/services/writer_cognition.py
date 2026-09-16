@@ -15,6 +15,7 @@ from novel_agent.domain.generation import (
     WriterTurnOutput,
     WriterWorkPlan,
     WriterWorkPlanResult,
+    WritingLengthPolicy,
     WritingLoopRequest,
     writer_length_repair_output_type,
 )
@@ -171,6 +172,55 @@ def draft_surface_error(
         if repeats_recent_prose(prose, draft_text, compact_trail=compact_trail):
             return "Writer draft repeats visible recent prose"
     return None
+
+
+def candidate_surface_error(
+    draft_text: str,
+    *,
+    length_policy: WritingLengthPolicy | None = None,
+    target_language: str | None = None,
+    allowed_language_tokens: tuple[str, ...] = (),
+    forbidden_reveals: tuple[str, ...] = (),
+    recent_prose: tuple[tuple[str, bool], ...] = (),
+) -> str | None:
+    """Shared hard surface gate for Writer output, Editor repair, and materialization."""
+
+    if length_policy is not None:
+        length = len(draft_text)
+        if length < length_policy.minimum_characters:
+            return (
+                "candidate is shorter than trusted WritingTask minimum "
+                f"({length} < {length_policy.minimum_characters})"
+            )
+        if length > length_policy.maximum_characters:
+            return (
+                "candidate exceeds trusted WritingTask maximum "
+                f"({length} > {length_policy.maximum_characters})"
+            )
+        paragraphs = tuple(part for part in draft_text.split("\n\n") if part.strip())
+        if (
+            length_policy.minimum_paragraphs is not None
+            and len(paragraphs) < length_policy.minimum_paragraphs
+        ):
+            return (
+                "candidate has fewer paragraphs than the explicit WritingTask policy "
+                f"({len(paragraphs)} < {length_policy.minimum_paragraphs})"
+            )
+        if (
+            length_policy.maximum_paragraphs is not None
+            and len(paragraphs) > length_policy.maximum_paragraphs
+        ):
+            return (
+                "candidate has more paragraphs than the explicit WritingTask policy "
+                f"({len(paragraphs)} > {length_policy.maximum_paragraphs})"
+            )
+    return draft_surface_error(
+        draft_text,
+        target_language=target_language,
+        allowed_language_tokens=allowed_language_tokens,
+        forbidden_reveals=forbidden_reveals,
+        recent_prose=recent_prose,
+    )
 
 
 def _writer_draft_surface_error(
@@ -797,9 +847,7 @@ class WriterCognitionService:
                 continue
             combined = fragment
             if len(combined) > policy.maximum_characters:
-                raise WriterCognitionError(
-                    "length repair exceeded the trusted WritingTask maximum"
-                )
+                raise WriterCognitionError("length repair exceeded the trusted WritingTask maximum")
             final_output = repaired
             final_call = repaired_call
 
@@ -811,19 +859,9 @@ class WriterCognitionService:
         merged = output.model_copy(
             update={
                 "draft_text": combined,
-                "declared_memory_hints": tuple(
-                    dict.fromkeys(
-                        (*output.declared_memory_hints, *final_output.declared_memory_hints)
-                    )
-                ),
-                "unresolved_questions": tuple(
-                    dict.fromkeys(
-                        (*output.unresolved_questions, *final_output.unresolved_questions)
-                    )
-                ),
-                "self_observations": tuple(
-                    dict.fromkeys((*output.self_observations, *final_output.self_observations))
-                ),
+                "declared_memory_hints": final_output.declared_memory_hints,
+                "unresolved_questions": final_output.unresolved_questions,
+                "self_observations": final_output.self_observations,
             }
         )
         # ``call`` is the last provider response; ``merged`` is the auditable host result that

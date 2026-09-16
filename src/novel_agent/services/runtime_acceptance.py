@@ -307,9 +307,7 @@ class RuntimeAcceptanceService:
             )
         return self._commands.get_task(task_id)
 
-    def _record_draft_revision(
-        self, task: TaskRecord, command: AcceptanceCommand
-    ) -> ArtifactRef:
+    def _record_draft_revision(self, task: TaskRecord, command: AcceptanceCommand) -> ArtifactRef:
         directive = {
             "directive_id": bounded_runtime_identity(
                 f"draft-revision.{task.task_id.root}",

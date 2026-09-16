@@ -400,9 +400,8 @@ class CreativeRuntimeService:
         except (KeyError, ValueError):
             return None
         detail = result.failure_detail or ""
-        if (
-            result.status is not WritingLoopTerminalStatus.WRITER_FAILED
-            or not detail.startswith("length repair exhausted its bounded continuation rounds")
+        if result.status is not WritingLoopTerminalStatus.WRITER_FAILED or not detail.startswith(
+            "length repair exhausted its bounded continuation rounds"
         ):
             return None
         directive = {

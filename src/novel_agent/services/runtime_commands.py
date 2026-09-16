@@ -161,41 +161,77 @@ class RuntimeCommandService:
         return max(1.0, self._attempt_lease.total_seconds() / 3.0)
 
     def create_run_and_initial_task(self, request: CreativeRunRequest) -> TaskRecord:
-        if request.plan_level in {PlanLevel.STORY, PlanLevel.ARC_VOLUME}:
-            horizon_start: int | None = None
-            horizon_end: int | None = None
-        else:
+        horizon_start: int | None
+        horizon_end: int | None
+        if request.initial_task_kind is TaskKind.DRAFT_CANDIDATE:
+            chapter_index = request.current_chapter + 1
             horizon_start = request.current_chapter + 1
             horizon_end = min(
                 request.target_chapters,
                 request.current_chapter + request.policy.planning_horizon,
             )
-        task = TaskRecord(
-            task_id=TaskId(
-                _bounded_runtime_identity(
-                    f"{request.run_id.root}.plan",
-                    request.run_id.root,
-                ).root
-            ),
-            run_id=request.run_id,
-            project_id=request.project_id,
-            kind=TaskKind.PLAN_CANDIDATE,
-            task_revision=0,
-            status=TaskStatus.READY,
-            basis_commit=request.basis_commit,
-            basis_snapshot=request.basis_snapshot,
-            policy_hash=request.policy.policy_hash,
-            permission_hash=request.policy.permission_hash,
-            input_artifact_refs=request.input_artifact_refs,
-            terminal_artifact_refs=request.continuation_artifact_refs,
-            failure_budget=request.policy.max_task_attempts,
-            retry_tranche_size=request.policy.max_task_attempts,
-            chapter_index=request.current_chapter,
-            target_chapters=request.target_chapters,
-            horizon_start=horizon_start,
-            horizon_end=horizon_end,
-            plan_level=request.plan_level,
-        )
+            task = TaskRecord(
+                task_id=TaskId(
+                    _bounded_runtime_identity(
+                        f"{request.run_id.root}.draft.{chapter_index}",
+                        request.run_id.root,
+                    ).root
+                ),
+                run_id=request.run_id,
+                project_id=request.project_id,
+                kind=TaskKind.DRAFT_CANDIDATE,
+                task_revision=0,
+                status=TaskStatus.READY,
+                basis_commit=request.basis_commit,
+                basis_snapshot=request.basis_snapshot,
+                policy_hash=request.policy.policy_hash,
+                permission_hash=request.policy.permission_hash,
+                input_artifact_refs=request.input_artifact_refs,
+                terminal_artifact_refs=request.continuation_artifact_refs,
+                failure_budget=request.policy.max_task_attempts,
+                retry_tranche_size=request.policy.max_task_attempts,
+                chapter_index=chapter_index,
+                target_chapters=request.target_chapters,
+                horizon_start=horizon_start,
+                horizon_end=horizon_end,
+                plan_level=None,
+            )
+        else:
+            if request.plan_level in {PlanLevel.STORY, PlanLevel.ARC_VOLUME}:
+                horizon_start = None
+                horizon_end = None
+            else:
+                horizon_start = request.current_chapter + 1
+                horizon_end = min(
+                    request.target_chapters,
+                    request.current_chapter + request.policy.planning_horizon,
+                )
+            task = TaskRecord(
+                task_id=TaskId(
+                    _bounded_runtime_identity(
+                        f"{request.run_id.root}.plan",
+                        request.run_id.root,
+                    ).root
+                ),
+                run_id=request.run_id,
+                project_id=request.project_id,
+                kind=TaskKind.PLAN_CANDIDATE,
+                task_revision=0,
+                status=TaskStatus.READY,
+                basis_commit=request.basis_commit,
+                basis_snapshot=request.basis_snapshot,
+                policy_hash=request.policy.policy_hash,
+                permission_hash=request.policy.permission_hash,
+                input_artifact_refs=request.input_artifact_refs,
+                terminal_artifact_refs=request.continuation_artifact_refs,
+                failure_budget=request.policy.max_task_attempts,
+                retry_tranche_size=request.policy.max_task_attempts,
+                chapter_index=request.current_chapter,
+                target_chapters=request.target_chapters,
+                horizon_start=horizon_start,
+                horizon_end=horizon_end,
+                plan_level=request.plan_level,
+            )
         now = datetime.now(UTC)
         with self._session_factory() as session, session.begin():
             if session.get(RuntimeTaskProjectionRow, task.task_id.root) is not None:

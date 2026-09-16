@@ -41,6 +41,7 @@ from novel_agent.domain.runtime import (
     TaskRecord,
     TaskStatus,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.services.commits import CommitService
 from novel_agent.services.event_log import RunEventLogRepository
 from novel_agent.services.runtime_commands import (
@@ -794,3 +795,42 @@ def test_unknown_failure_settlement_fails_closed_to_recovery_pending(
         row = session.get(RuntimeTaskAttemptRow, attempt.attempt_id.root)
         assert row is not None
         assert row.attempt_json["failure_class"] == FailureClass.UNKNOWN.value
+
+
+def test_create_run_and_initial_task_supports_draft_candidate_continuation(
+    kernel: tuple[sessionmaker[Session], RuntimeCommandService, CommitId],
+) -> None:
+    _factory, commands, base = kernel
+    draft_request = _request("run.draft-continuation", base).model_copy(
+        update={
+            "initial_task_kind": TaskKind.DRAFT_CANDIDATE,
+            "current_chapter": 0,
+            "target_chapters": 800,
+            "plan_level": None,
+        }
+    )
+    task = commands.create_run_and_initial_task(draft_request)
+    assert task.kind is TaskKind.DRAFT_CANDIDATE
+    assert task.task_id.root == "run.draft-continuation.draft.1"
+    assert task.chapter_index == 1
+    assert task.plan_level is None
+    assert task.horizon_start == 1
+    assert task.horizon_end == 5
+    assert task.dependency_task_ids == ()
+    assert task.status is TaskStatus.READY
+
+    # Idempotency check:
+    assert commands.create_run_and_initial_task(draft_request) == task
+
+    # Validation check: cannot declare plan_level for draft continuation
+    with pytest.raises(
+        ValueError,
+        match="draft continuation cannot declare an initial planning level",
+    ):
+        CreativeRunRequest.model_validate(
+            {
+                **_request("run.invalid-draft", base).model_dump(mode="python"),
+                "initial_task_kind": TaskKind.DRAFT_CANDIDATE,
+                "plan_level": PlanLevel.CHAPTER_SET,
+            }
+        )

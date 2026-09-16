@@ -35,6 +35,11 @@ from novel_agent.domain.planning import (
     ReviewDecision,
     ReviewTargetKind,
 )
+from novel_agent.domain.retrieval_decision import (
+    HistoryRetrievalDecision,
+    HistoryRetrievalNeed,
+    HistoryRetrievalRequirement,
+)
 from novel_agent.domain.stage2 import (
     AgentMode,
     PlannerProposalDraft,
@@ -256,6 +261,21 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
     @staticmethod
     def _proposal(prompt: str) -> PlannerProposalDraft:
         chapter = ProductionChapterEndpoint._horizon(prompt)[0]
+        history_retrieval = (
+            HistoryRetrievalDecision.first_chapter_waiver()
+            if chapter == 1
+            else HistoryRetrievalDecision(
+                requirement=HistoryRetrievalRequirement.REQUIRED,
+                needs=(
+                    HistoryRetrievalNeed(
+                        kind="causal_history",
+                        query="林澈受伤仍未痊愈",
+                        entity_ids=(StableId("entity.synthetic.lin-che"),),
+                        source_chapter_end=chapter - 1,
+                    ),
+                ),
+            )
+        ).model_dump(mode="json", exclude_none=True)
         return PlannerProposalDraft(
             mode=AgentMode.CHAPTER_SET,
             plan_items=(
@@ -267,16 +287,7 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
                         "summary": _CHAPTER_GOAL,
                         "chapter_index": chapter,
                         "obligation_ids": ["obligation.synthetic.north-tower"],
-                        "history_retrieval": {
-                            "requirement": "REQUIRED",
-                            "needs": [
-                                {
-                                    "kind": "causal_history",
-                                    "query": "林澈受伤仍未痊愈",
-                                    "entity_ids": ["entity.synthetic.lin-che"],
-                                }
-                            ],
-                        },
+                        "history_retrieval": history_retrieval,
                     },
                     provenance=ProposalProvenance.PLANNER_PROPOSED,
                 ),

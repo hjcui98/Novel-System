@@ -44,6 +44,58 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "StableId",
       "type": "string"
+    },
+    "WriterSceneExecutionBeat": {
+      "additionalProperties": false,
+      "description": "Execution arrangement for one chapter beat. Expected length is not a quality proof.",
+      "properties": {
+        "beat_ref": {
+          "minLength": 1,
+          "title": "Beat Ref",
+          "type": "string"
+        },
+        "choice": {
+          "minLength": 1,
+          "title": "Choice",
+          "type": "string"
+        },
+        "close_point": {
+          "minLength": 1,
+          "title": "Close Point",
+          "type": "string"
+        },
+        "expected_characters": {
+          "minimum": 1,
+          "title": "Expected Characters",
+          "type": "integer"
+        },
+        "outcome": {
+          "minLength": 1,
+          "title": "Outcome",
+          "type": "string"
+        },
+        "resistance": {
+          "minLength": 1,
+          "title": "Resistance",
+          "type": "string"
+        },
+        "scene_expansion": {
+          "minLength": 1,
+          "title": "Scene Expansion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "beat_ref",
+        "scene_expansion",
+        "resistance",
+        "choice",
+        "outcome",
+        "expected_characters",
+        "close_point"
+      ],
+      "title": "WriterSceneExecutionBeat",
+      "type": "object"
     }
   },
   "additionalProperties": false,
@@ -87,6 +139,14 @@
       "title": "Emotional Movement",
       "type": "array"
     },
+    "execution_beats": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/WriterSceneExecutionBeat"
+      },
+      "title": "Execution Beats",
+      "type": "array"
+    },
     "expected_skill_checkpoints": {
       "additionalProperties": {
         "items": {
@@ -97,6 +157,19 @@
       },
       "title": "Expected Skill Checkpoints",
       "type": "object"
+    },
+    "expected_total_characters": {
+      "anyOf": [
+        {
+          "minimum": 1,
+          "type": "integer"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Expected Total Characters"
     },
     "hook_actions": {
       "default": [],

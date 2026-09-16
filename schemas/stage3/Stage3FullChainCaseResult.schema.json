@@ -1195,13 +1195,89 @@
       "title": "DraftSpan",
       "type": "object"
     },
+    "EditorialConstraintSource": {
+      "additionalProperties": false,
+      "description": "The visible constraint a blocking Editor issue claims to violate.",
+      "properties": {
+        "conflict_reason": {
+          "minLength": 1,
+          "title": "Conflict Reason",
+          "type": "string"
+        },
+        "context_item_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "field_name": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Field Name"
+        },
+        "kind": {
+          "$ref": "#/$defs/EditorialConstraintSourceKind"
+        }
+      },
+      "required": [
+        "kind",
+        "conflict_reason"
+      ],
+      "title": "EditorialConstraintSource",
+      "type": "object"
+    },
+    "EditorialConstraintSourceKind": {
+      "enum": [
+        "writing_task_field",
+        "context_item",
+        "chapter_scope"
+      ],
+      "title": "EditorialConstraintSourceKind",
+      "type": "string"
+    },
+    "EditorialEvidenceScope": {
+      "enum": [
+        "quote",
+        "chapter"
+      ],
+      "title": "EditorialEvidenceScope",
+      "type": "string"
+    },
     "EditorialIssue": {
       "additionalProperties": false,
       "properties": {
+        "constraint_source": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/EditorialConstraintSource"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "description": {
           "minLength": 1,
           "title": "Description",
           "type": "string"
+        },
+        "evidence_scope": {
+          "$ref": "#/$defs/EditorialEvidenceScope",
+          "default": "quote"
         },
         "issue_id": {
           "$ref": "#/$defs/StableId"
@@ -2166,6 +2242,9 @@
           "title": "Changed Spans",
           "type": "array"
         },
+        "context_id": {
+          "$ref": "#/$defs/StableId"
+        },
         "created_at": {
           "format": "date-time",
           "title": "Created At",
@@ -2200,6 +2279,12 @@
         "repair_report_id": {
           "$ref": "#/$defs/StableId"
         },
+        "snapshot_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "task_contract_id": {
+          "$ref": "#/$defs/StableId"
+        },
         "text_artifact": {
           "$ref": "#/$defs/ArtifactRef"
         }
@@ -2208,6 +2293,9 @@
         "draft_id",
         "parent_draft_id",
         "repair_report_id",
+        "task_contract_id",
+        "snapshot_id",
+        "context_id",
         "text_artifact",
         "changed_spans",
         "editor_receipt",
@@ -2791,6 +2879,58 @@
       "title": "WriterInputTaint",
       "type": "string"
     },
+    "WriterSceneExecutionBeat": {
+      "additionalProperties": false,
+      "description": "Execution arrangement for one chapter beat. Expected length is not a quality proof.",
+      "properties": {
+        "beat_ref": {
+          "minLength": 1,
+          "title": "Beat Ref",
+          "type": "string"
+        },
+        "choice": {
+          "minLength": 1,
+          "title": "Choice",
+          "type": "string"
+        },
+        "close_point": {
+          "minLength": 1,
+          "title": "Close Point",
+          "type": "string"
+        },
+        "expected_characters": {
+          "minimum": 1,
+          "title": "Expected Characters",
+          "type": "integer"
+        },
+        "outcome": {
+          "minLength": 1,
+          "title": "Outcome",
+          "type": "string"
+        },
+        "resistance": {
+          "minLength": 1,
+          "title": "Resistance",
+          "type": "string"
+        },
+        "scene_expansion": {
+          "minLength": 1,
+          "title": "Scene Expansion",
+          "type": "string"
+        }
+      },
+      "required": [
+        "beat_ref",
+        "scene_expansion",
+        "resistance",
+        "choice",
+        "outcome",
+        "expected_characters",
+        "close_point"
+      ],
+      "title": "WriterSceneExecutionBeat",
+      "type": "object"
+    },
     "WriterSourceBinding": {
       "additionalProperties": false,
       "description": "Bind a trusted source identity to its immutable artifact.",
@@ -2859,6 +2999,14 @@
           "title": "Emotional Movement",
           "type": "array"
         },
+        "execution_beats": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/WriterSceneExecutionBeat"
+          },
+          "title": "Execution Beats",
+          "type": "array"
+        },
         "expected_skill_checkpoints": {
           "additionalProperties": {
             "items": {
@@ -2869,6 +3017,19 @@
           },
           "title": "Expected Skill Checkpoints",
           "type": "object"
+        },
+        "expected_total_characters": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Expected Total Characters"
         },
         "hook_actions": {
           "default": [],

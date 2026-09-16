@@ -95,6 +95,7 @@ class ProductionAssemblyContext:
     opensearch_url: str | None = None
     embedding_url: str | None = None
     reranker_url: str | None = None
+    retrieval_service_root: Path | None = None
 
     def __post_init__(self) -> None:
         if self.endpoint_request_limit not in (1, 2):
