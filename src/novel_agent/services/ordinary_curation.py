@@ -331,6 +331,12 @@ async def extract_source_batches(
                 }
             )
             if cumulative_token_budgets is not None:
+                # ``ModelCurator`` may have preflighted the whole source envelope before
+                # slicing it into pages. A page is a distinct model request, so it must
+                # not inherit the parent's in-process EffectiveBudgetResult. Clear only
+                # the binding marker; the caller's explicit output cap remains part of the
+                # request and is resolved again against this page's prompt.
+                current = current.model_copy(update={"budget_source": None})
                 budget, _tier = gateway.preflight_elastic_cumulative_token_budget(
                     current,
                     token_budgets=cumulative_token_budgets,
@@ -343,6 +349,7 @@ async def extract_source_batches(
                     }
                 )
             elif cumulative_token_budget is not None:
+                current = current.model_copy(update={"budget_source": None})
                 budget = gateway.preflight_cumulative_token_budget(
                     current,
                     token_budget=cumulative_token_budget,
@@ -379,6 +386,9 @@ async def extract_source_batches(
                     }
                 )
                 if cumulative_token_budgets is not None:
+                    # The compact retry has its own request identity as well. It must
+                    # resolve the reduced output cap before ``generate_structured``.
+                    compact = compact.model_copy(update={"budget_source": None})
                     budget, _tier = gateway.preflight_elastic_cumulative_token_budget(
                         compact,
                         token_budgets=cumulative_token_budgets,
@@ -391,6 +401,7 @@ async def extract_source_batches(
                         }
                     )
                 elif cumulative_token_budget is not None:
+                    compact = compact.model_copy(update={"budget_source": None})
                     budget = gateway.preflight_cumulative_token_budget(
                         compact,
                         token_budget=cumulative_token_budget,

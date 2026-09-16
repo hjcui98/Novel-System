@@ -734,6 +734,16 @@ class _BudgetGateway(_PageGateway):
         raise last_error
 
 
+class _StrictPageBudgetGateway(_BudgetGateway):
+    """Reject inherited budget bindings, matching the production gateway guard."""
+
+    def preflight_cumulative_token_budget(self, request, *, token_budget, tokens_used=0):
+        assert request.budget_source is None
+        return super().preflight_cumulative_token_budget(
+            request, token_budget=token_budget, tokens_used=tokens_used
+        )
+
+
 class _TruncatingBudgetGateway(_BudgetGateway):
     async def generate_structured(self, request, model_type, **kwargs):
         original = request.request_id.root
@@ -770,6 +780,45 @@ def test_elastic_budget_uses_the_first_tier_then_counts_prior_pages() -> None:
         token_budget == 48_000 and used == 25_000 for _id, token_budget, used in gateway.preflights
     )
     assert len(calls) == 2
+
+
+def test_page_preflight_does_not_reuse_a_parent_effective_budget_binding() -> None:
+    gateway = _StrictPageBudgetGateway(
+        [_draft(operations=(_operation("event.bound-parent"),), has_more=False)]
+    )
+    bound_parent = _enveloped_request().model_copy(
+        update={
+            "max_output_tokens": 8_192,
+            "budget_source": BudgetSource.EXPLICIT_REQUEST,
+        }
+    )
+
+    asyncio.run(
+        extract_source_batches(
+            gateway,
+            bound_parent,
+            CHAPTER,
+            _world(),
+            (),
+            base_commit=COMMIT,
+            cumulative_token_budgets=(24_000, 48_000),
+        )
+    )
+
+    legacy_gateway = _StrictPageBudgetGateway(
+        [_draft(operations=(_operation("event.bound-parent-legacy"),), has_more=False)]
+    )
+    asyncio.run(
+        extract_source_batches(
+            legacy_gateway,
+            bound_parent,
+            CHAPTER,
+            _world(),
+            (),
+            base_commit=COMMIT,
+            cumulative_token_budget=24_000,
+        )
+    )
 
 
 def test_legacy_single_cumulative_budget_path_still_binds_receipts() -> None:
