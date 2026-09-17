@@ -3077,7 +3077,7 @@ class TaskPlanConditionedNeedGenerator:
             uncertainty_policy=NeedUncertaintyPolicy.ALLOW_GAP_ONLY,
             gap_policy=(
                 NeedGapPolicy.EMIT_TYPED_GAP
-                if available_history < min_chapters
+                if not mandatory or available_history < min_chapters
                 else NeedGapPolicy.FAIL_MANDATORY
             ),
             producer="TaskPlanConditionedNeedGenerator",

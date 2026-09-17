@@ -620,6 +620,16 @@ class WriterCognitionService:
             + "\n\n".join(selected_texts)
             + "\n\n<TRUSTED_WRITING_LENGTH_POLICY>\n"
             + (
+                "【严格篇幅与字数要求】\n"
+                f"1. draft_text 的中文字符总数（Unicode 字符长度）必须严格在 "  # noqa: RUF001
+                f"{request.writing_task.length_policy.minimum_characters} 至 "
+                f"{request.writing_task.length_policy.maximum_characters} 字之间！\n"  # noqa: RUF001
+                f"2. 注意：此处字数指实际汉字字符数（len(draft_text)），绝不是模型 Token 数！"  # noqa: RUF001
+                f"目标写满 {request.writing_task.length_policy.target_characters} 字左右，"  # noqa: RUF001
+                f"严禁少于 {request.writing_task.length_policy.minimum_characters} 字"
+                "（少于最低字数将被系统硬性拒绝并判定失败）。\n"  # noqa: RUF001
+                "3. 请充分展开各情节节拍的环境渲染、动作交锋过程、人物心理层次与即时反应，"  # noqa: RUF001
+                "确保篇幅充足饱满。\n"
                 "For DRAFT_READY, draft_text must contain between "
                 f"{request.writing_task.length_policy.minimum_characters} and "
                 f"{request.writing_task.length_policy.maximum_characters} characters "
@@ -806,21 +816,20 @@ class WriterCognitionService:
                         prepared.prompt
                         + "\n\n<WRITER_LENGTH_REPAIR>\n"
                         + "【长度恢复】当前正文草稿尚未达到受信写作契约的最低长度。"
-                        + f"当前为{len(combined)}字, 最低要求为{policy.minimum_characters}字, "
+                        + f"当前草稿实际仅有 {len(combined)} 个中文字符，"  # noqa: RUF001
+                        + f"系统最低硬性门槛为 {policy.minimum_characters} 字，"  # noqa: RUF001
                         + (
-                            f"目标为{policy.target_characters}字, "
-                            f"上限为{policy.maximum_characters}字。\n"
+                            f"目标为 {policy.target_characters} 字，"  # noqa: RUF001
+                            f"上限为 {policy.maximum_characters} 字。\n"
                         )
+                        + f"【关键扩充任务】：当前篇幅还差至少 {policy.minimum_characters - len(combined) + 150} 个中文字符！"  # noqa: E501, RUF001
+                        + "这里的字符数是指纯文本实际汉字长度（len），绝非模型 Token 数！\n"  # noqa: RUF001
                         + "请将当前短稿从头改写为一份完整、连贯且达到最低长度的本章正文。"
                         + "本轮 draft_text 字段必须输出完整替代稿，不得只输出续写片段，"  # noqa: RUF001
                         + "不得输出提纲、解释、审校意见或内部标签，也不得在中途制造一次假结尾"  # noqa: RUF001
-                        + "后重新开始同一场景。改写只能深化当前短稿已经出现的场景、动作、"
-                        + "感官和即时心理；不得新增人物、命名组织、亲属遗言或遗物、"  # noqa: RUF001
-                        + "身世背景、特殊物品、能力机制、世界规则、任务或下一章事件。"
-                        + "若现有素材不足，以动作受阻、重复训练产生的细微差异、环境压力和"  # noqa: RUF001
-                        + "当下选择扩展，不得用新设定填充篇幅。保持同一人物视角、"  # noqa: RUF001
-                        + "语言和已确认节拍，并让因果过程只推进一次，"  # noqa: RUF001
-                        + "直到完整替代稿达到最低长度。\n"
+                        + "后重新开始同一场景。改写必须充分深化当前短稿中已经出现的场景氛围、同僚动作反应、"  # noqa: E501
+                        + "刀法招式细节、星力受阻与突破的感官描写以及当下心理博弈；不得新增违背主线的人物或新设定。"  # noqa: E501, RUF001
+                        + f"务必放开笔触细化描写，使最终整篇完整正文的中文字符数达到 {policy.minimum_characters + 200} 字以上（如 3200-3800 字）！\n"  # noqa: E501, RUF001
                         + "<SHORT_DRAFT_TO_REWRITE>\n"
                         + combined
                         + "\n</SHORT_DRAFT_TO_REWRITE>\n"

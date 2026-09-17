@@ -2461,6 +2461,30 @@ class CreativeRuntimeService:
                     return False
             return True
 
+        has_active_draft = any(
+            (
+                projection.task_id in task.dependency_task_ids
+                or task.chapter_index == projection.chapter_index + 1
+            )
+            and task.kind is TaskKind.DRAFT_CANDIDATE
+            and not task.superseded
+            and task.status not in {TaskStatus.FAILED, TaskStatus.CANCELLED}
+            for task in tasks
+        )
+        if has_active_draft:
+            return None
+        try:
+            manifest = self._commits.load_manifest(projection.basis_commit)
+            plan = PlanRootDocument.model_validate_json(
+                self._artifacts.read_verified(manifest.plan_root)
+            )
+            if any(
+                goal.chapter_index == projection.chapter_index + 1 for goal in plan.chapter_goals
+            ):
+                return None
+        except Exception:
+            pass
+
         existing = next(
             (
                 task

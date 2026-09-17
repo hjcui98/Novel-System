@@ -114,7 +114,9 @@ def evaluate_package_readiness(package: object) -> WriterReadinessDecision:
             or lineage.frozen_evidence_selections_artifact is None
         ):
             codes.append(WriterReadinessReasonCode.MEMORY_GATEWAY_NOT_EXECUTED)
-        if package.semantic_status != "COMPLETE" or package.unclosed_mandatory_need_facets:
+        if not package.usable_with_gaps and (
+            package.semantic_status != "COMPLETE" or package.unclosed_mandatory_need_facets
+        ):
             codes.append(WriterReadinessReasonCode.MANDATORY_FACET_INCOMPLETE)
     else:
         if not package.lineage.history_waiver_ref:
