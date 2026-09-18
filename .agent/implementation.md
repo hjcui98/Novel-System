@@ -4588,10 +4588,12 @@ PASS. Plugin success does not lift the worker-restart or sandbox notes.
   `PlanningQuestionDraft.schema.json`）。
 - 本地命令（worktree `.conda-env`）：
   `NOVEL_AGENT_FORBID_MODEL_CALLS=true .conda-env/bin/pytest -m "not model_required and not integration" -q --no-cov`
-  → **65 failed, 3538 passed, 1 skipped**。
+  → **65 failed, 3538 passed, 1 skipped**（提交 `575afed` 后复测一致）。
 - 同条件下对基线 `dda6938` 的独立 worktree（`tmp/ns-baseline-check`）运行同一命令
-  → **77 failed**。两者差集：**我的改动没有引入任何新的失败项**，并修好了 12 项
+  → **77 failed**。逐项差集：**本次改动引入 0 项新失败**，并修好 12 项
   （5 项 schema 漂移、2 项维护身份、1 项卷阶段渲染、3 项问句/缺口契约、1 项真实 Writer 链）。
+- `ruff check .`、`ruff format --check .` 全仓库通过；`src/` 下 MyPy 无错误
+  （其余 556 项 MyPy 报错全部位于既有测试文件，与基线同源）。
 - 剩余 65 项为环境性既有失败：49 项 `FileNotFoundError` + 47 项
   `HumanBenchmarkCompileError` 指向未随 worktree 检出的 `benchmarks/private` 私有基准数据与实际
   小说运行目录，其余为依赖真实冻结 artifact / 基础设施的断言。
