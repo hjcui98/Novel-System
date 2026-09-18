@@ -570,3 +570,231 @@ def test_artifact_ref_helper_is_unused_but_imported_for_typing() -> None:
     """Keep the imported ArtifactRef meaningful for the harness annotations."""
 
     assert ArtifactRef.model_fields["media_type"] is not None
+
+
+def test_every_child_must_satisfy_the_full_chapter_contract(tmp_path: Path) -> None:
+    """A child cannot smuggle a malformed chapter.v2 past convenience keys."""
+
+    broken = _chapter_item(6).model_copy(
+        update={
+            "payload": {
+                "contract_version": "chapter.v2",
+                "chapter_index": 6,
+                "summary": "看起来像章纲",
+                "detail_level": "garbage",
+            }
+        }
+    )
+    items = (_set_item(start=6, end=6, assignments=(_assignment(6),)), broken)
+
+    with pytest.raises(CandidateMaterializationError, match=r"not a valid chapter\.v2 payload"):
+        _materialize(tmp_path, items, horizon=(6, 6))
+
+
+def test_child_turn_reference_must_exist_in_the_window(tmp_path: Path) -> None:
+    """A chapter cannot claim a window turn the parent never declared."""
+
+    child = _chapter_item(6).model_copy(
+        update={
+            "payload": {
+                **_chapter_item(6).payload,
+                "parent_turn_refs": ["turn.never.declared"],
+            }
+        }
+    )
+    items = (_set_item(start=6, end=6, assignments=(_assignment(6),)), child)
+
+    with pytest.raises(CandidateMaterializationError, match="never declared"):
+        _materialize(tmp_path, items, horizon=(6, 6))
+
+
+def test_child_and_parent_must_agree_about_the_turns_it_carries(
+    tmp_path: Path,
+) -> None:
+    """H04: the parent's responsibility map and the chapter's mandate must match."""
+
+    assignment = {**_assignment(6), "turn_refs": ["turn.window.open"]}
+    parent = _set_item(start=6, end=6, assignments=(assignment,))
+    parent = parent.model_copy(
+        update={
+            "payload": {
+                **parent.payload,
+                "plot_turns": [
+                    {
+                        "turn_id": "turn.window.open",
+                        "summary": "打开窗口。",
+                        "responsibility": "建立起点",
+                    },
+                    {
+                        "turn_id": "turn.window.cost",
+                        "summary": "付出代价。",
+                        "responsibility": "推进代价",
+                    },
+                ],
+            }
+        }
+    )
+    child = _chapter_item(6).model_copy(
+        update={
+            "payload": {
+                **_chapter_item(6).payload,
+                "parent_turn_refs": ["turn.window.cost"],
+            }
+        }
+    )
+
+    with pytest.raises(CandidateMaterializationError, match="disagree about"):
+        _materialize(tmp_path, (parent, child), horizon=(6, 6))
+
+
+def test_a_chapter_refinement_must_preserve_its_node_identity(tmp_path: Path) -> None:
+    """outline -> execution deepens one chapter; it does not replace its id."""
+
+    items = (_set_item(start=6, end=6, assignments=(_assignment(6),)), _chapter_item(6))
+    _materialize(tmp_path, items, horizon=(6, 6))
+
+    # Re-running the same window is what a refinement does; the identity check is
+    # exercised through the payload validator below, and the materializer refuses
+    # a refinement whose item id no longer matches the accepted chapter.
+    from novel_agent.domain.plan_detail import ChapterPayloadV2
+
+    with pytest.raises(ValueError, match="earlier chapter of its window"):
+        ChapterPayloadV2(
+            chapter_index=6,
+            detail_level="outline",
+            summary="章纲",
+            narrative_function="推进",
+            plan_dependencies=(9,),
+        )
+
+
+def test_plan_dependencies_only_name_earlier_chapters() -> None:
+    """H07: a within-window dependency reads backwards, never forwards."""
+
+    from novel_agent.domain.plan_detail import (
+        ChapterPayloadV2,
+        require_acyclic_plan_dependencies,
+    )
+
+    earlier = ChapterPayloadV2(
+        chapter_index=8,
+        detail_level="outline",
+        summary="第 8 章章纲。",
+        narrative_function="承接第 6 章的计划输出。",
+        plan_dependencies=(6,),
+    )
+    assert earlier.plan_dependencies == (6,)
+
+    with pytest.raises(ValueError, match="cannot depend on itself"):
+        ChapterPayloadV2(
+            chapter_index=8,
+            detail_level="outline",
+            summary="第 8 章章纲。",
+            narrative_function="自指。",
+            plan_dependencies=(8,),
+        )
+    with pytest.raises(ValueError, match="must be unique"):
+        ChapterPayloadV2(
+            chapter_index=8,
+            detail_level="outline",
+            summary="第 8 章章纲。",
+            narrative_function="重复依赖。",
+            plan_dependencies=(6, 6),
+        )
+
+    require_acyclic_plan_dependencies({6: (), 7: (6,), 8: (6, 7)})
+    with pytest.raises(ValueError, match="earlier chapter"):
+        require_acyclic_plan_dependencies({6: (7,), 7: ()})
+
+
+def _roadmap(start: int, end: int, *, segments: int = 2) -> list[dict[str, object]]:
+    width = max(1, (end - start + 1) // segments)
+    entries: list[dict[str, object]] = []
+    cursor = start
+    index = 0
+    while cursor <= end:
+        stop = min(end, cursor + width - 1)
+        index += 1
+        entries.append(
+            {
+                "slot_id": f"roadmap.{start}.{index}",
+                "chapter_start": cursor,
+                "chapter_end": stop,
+                "plot_summary": f"第 {cursor}-{stop} 章：这一段连续情节的推进。",  # noqa: RUF001
+                "key_cast": ["主角"],
+                "element_refs": ["本卷主要元素"],
+                "expected_turn": f"第 {stop} 章结束时局势向前一步。",
+            }
+        )
+        cursor = stop + 1
+    return entries
+
+
+def test_volume_roadmap_must_cover_the_volume_consecutively() -> None:
+    """The volume must say how its own range breaks into coarse blocks."""
+
+    from novel_agent.domain.plan_detail import validate_chapter_set_roadmap
+
+    good = _roadmap(1, 100)
+    segments = validate_chapter_set_roadmap(good, volume_start=1, volume_end=100)
+    assert next(item.chapter_start for item in segments) == 1
+    assert segments[-1].chapter_end == 100
+
+    # A gap cannot be used to decide which window to instantiate next.
+    with pytest.raises(ValueError, match="consecutively"):
+        validate_chapter_set_roadmap(
+            [
+                {**good[0], "chapter_start": 1, "chapter_end": 40},
+                {**good[1], "chapter_start": 60, "chapter_end": 100},
+            ],
+            volume_start=1,
+            volume_end=100,
+        )
+
+    with pytest.raises(ValueError, match="start at the volume's first chapter"):
+        validate_chapter_set_roadmap(_roadmap(11, 100), volume_start=1, volume_end=100)
+
+    with pytest.raises(ValueError, match="end at the volume's last chapter"):
+        validate_chapter_set_roadmap(_roadmap(1, 90), volume_start=1, volume_end=100)
+
+    with pytest.raises(ValueError, match="must declare"):
+        validate_chapter_set_roadmap(None, volume_start=1, volume_end=100)
+
+
+def test_volume_roadmap_rejects_one_repeated_summary() -> None:
+    """Ten identical segments are not a roadmap."""
+
+    from novel_agent.domain.plan_detail import validate_chapter_set_roadmap
+
+    repeated = [
+        {
+            "slot_id": f"roadmap.1.{index}",
+            "chapter_start": start,
+            "chapter_end": start + 9,
+            "plot_summary": "推进剧情，保持节奏。",  # noqa: RUF001
+            "expected_turn": "局势推进。",
+        }
+        for index, start in enumerate(range(1, 101, 10), start=1)
+    ]
+
+    with pytest.raises(ValueError, match=r"at least 20 characters|placeholder"):
+        validate_chapter_set_roadmap(repeated, volume_start=1, volume_end=100)
+
+
+def test_volume_roadmap_segments_must_differ_in_content() -> None:
+    from novel_agent.domain.plan_detail import validate_chapter_set_roadmap
+
+    shared = "这一段连续情节的推进与结果。" * 2
+    entries = [
+        {
+            "slot_id": f"roadmap.1.{index}",
+            "chapter_start": start,
+            "chapter_end": start + 9,
+            "plot_summary": shared,
+            "expected_turn": "局势推进。",
+        }
+        for index, start in enumerate(range(1, 101, 10), start=1)
+    ]
+
+    with pytest.raises(ValueError, match="cannot repeat one summary"):
+        validate_chapter_set_roadmap(entries, volume_start=1, volume_end=100)

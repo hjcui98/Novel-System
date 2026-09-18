@@ -137,10 +137,35 @@ def _payload() -> str:
         narrative.update(
             {key: stage(f"{key} 描述", f"{end - 9}-{end - 5}", "progression", lock) for key in late}
         )
+        # The volume must also segment its own range into consecutive coarse
+        # chapter blocks; two halves are enough for a fixture whose only real
+        # content is the injected stage defect.
+        midpoint = start + (end - start) // 2
+        roadmap = [
+            {
+                "slot_id": f"roadmap.{start}.a",
+                "chapter_start": start,
+                "chapter_end": midpoint,
+                "plot_summary": f"第 {start}-{midpoint} 章：本卷开局阶段连续推进。",  # noqa: RUF001
+                "key_cast": ["主角"],
+                "element_refs": ["本卷主要元素"],
+                "expected_turn": "局势从入卷状态转向中点压力。",
+            },
+            {
+                "slot_id": f"roadmap.{start}.b",
+                "chapter_start": midpoint + 1,
+                "chapter_end": end,
+                "plot_summary": f"第 {midpoint + 1}-{end} 章：本卷收束阶段连续推进。",  # noqa: RUF001
+                "key_cast": ["主角", "对手"],
+                "element_refs": ["本卷主要元素"],
+                "expected_turn": "局势从中点压力走向本卷出口。",
+            },
+        ]
         return {
             "plan_level": "arc_volume",
             "chapter_start": start,
             "chapter_end": end,
+            "chapter_set_roadmap": roadmap,
             "midpoint_reversal": stage("中点推进", f"{unlock}-{unlock + 9}", "progression", lock),
             "volume_climax": climax,
             "protagonist_arc": "主角弧线",

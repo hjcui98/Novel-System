@@ -2314,7 +2314,10 @@ class CreativeRuntimeService:
         )
         if covering and covering[0].chapter_end is not None:
             horizon_end = min(horizon_end, covering[0].chapter_end)
-        plan_level = previous.plan_level or PlanLevel.CHAPTER_SET
+        # A rolling window is always a CHAPTER_SET.  Inheriting the previous
+        # task's level would leak a finished CHAPTER refinement into the next
+        # window and produce a single-chapter "chapter set".
+        plan_level = PlanLevel.CHAPTER_SET
         return TaskRecord(
             task_id=self._plan_task_id(
                 previous.run_id,

@@ -10,7 +10,23 @@ ARC_VOLUME（包括有界修订）的顶层输出只使用 `mode`、`plan_items`
 `kind: "arc_volume"`，但其 payload 必须声明 `plan_level: "arc_volume"`。不要把卷
 放入 bootstrap 专用的 `project_intent_items`，不要输出 bootstrap intent 或 strategy。
 
-硬性结构要求：每个卷 item 必须填写 `opening_state`、`trigger_event`、`first_escalation`、`first_cost`、`midpoint_reversal`、`second_escalation`、`volume_climax`、`climax_cost`、`ending_state`、`next_volume_hook`、`protagonist_arc`、`supporting_arc`、`faction_arc`、`capability_ceiling`、`equipment_ceiling`、`entry_conditions`、`exit_conditions`、`reveal_window`、`obligation_plan` 全部非空；卷范围必须连续覆盖 1..`target_chapters` 且数量等于 `expected_volume_count`。无法安全规划时返回结构化 `unresolved`（blocking=true，kind 取自 AUTHOR_INTENT_CONFLICT / CURRENT_STATE_UNKNOWN / POWER_LEVEL_UNKNOWN / KNOWLEDGE_BOUNDARY_UNKNOWN），不要以不完整 coverage 宣称 PLAN_READY。
+硬性结构要求：每个卷 item 必须填写 `opening_state`、`trigger_event`、`first_escalation`、`first_cost`、`midpoint_reversal`、`second_escalation`、`volume_climax`、`climax_cost`、`ending_state`、`next_volume_hook`、`protagonist_arc`、`supporting_arc`、`faction_arc`、`capability_ceiling`、`equipment_ceiling`、`entry_conditions`、`exit_conditions`、`reveal_window`、`obligation_plan`、`chapter_set_roadmap` 全部非空；卷范围必须连续覆盖 1..`target_chapters` 且数量等于 `expected_volume_count`。无法安全规划时返回结构化 `unresolved`（blocking=true，kind 取自 AUTHOR_INTENT_CONFLICT / CURRENT_STATE_UNKNOWN / POWER_LEVEL_UNKNOWN / KNOWLEDGE_BOUNDARY_UNKNOWN），不要以不完整 coverage 宣称 PLAN_READY。
+
+【卷级粗章集路线图】每个卷 item 还必须填写 `chapter_set_roadmap`：把**本卷自己的章节范围**
+切成连续、有序、无缺口也无重叠的粗剧情块。它是**未来意图的粗路线图**，不是已经细化、已经
+发生或已经接纳的逐章剧情；正式 CHAPTER_SET 仍按当前滚动窗口实例化。
+
+- 每项是对象：`slot_id`（稳定局部 ID）、`chapter_start`、`chapter_end`、
+  `plot_summary`（这一段连续情节的起因/行动/对抗/转折/结果，不得是“推进剧情”之类的占位标签）、
+  `key_cast`（这一段的关键出场）、`element_refs`（这一段要用到的元素/伏笔/义务引用）、
+  `expected_turn`（这一段结束时局势发生什么变化）。
+- 段落必须从本卷第一章开始、到本卷最后一章结束，前一段的 `chapter_end + 1` 必须等于后一段的
+  `chapter_start`；不得留洞、不得重叠、不得越出本卷范围。
+- 段落边界必须尊重真实卷内阶段，不能把任意节拍硬切成整齐的等长块。
+- 多段路线图不得每段都用同一句 `plot_summary` 充数；宿主会按区间连续性、覆盖完整性和
+  内容重复逐项校验。
+- 路线图里出现的未来事件、人物关系与奖励**都不是当前既有事实**：不要把它们写成 World relation，
+  也不要让后续窗口把它们当成已经发生。当前窗口只细化自己覆盖的未完成后缀。
 
 `obligation_plan` 的每条责任必须包含非空 `owner_ids`，且只能使用 SOURCE_DATA 中逐字存在的 canonical World entity ID；名称、`planner-context.*` 展示句柄和自造 ID 都不合法。`owner_ids` 表示必须持续追踪其状态以判断该责任是否设立、推进或兑现的叙事主体/检索锚点；奖励授予者、导师、信息持有者、地点或偶然参与者不是 owner，除非该实体自身的持续状态就是责任的一部分。多条责任可以基于事实绑定同一主体，不得为了多样性改绑其他实体。
 

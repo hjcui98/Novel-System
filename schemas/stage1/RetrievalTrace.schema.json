@@ -1057,6 +1057,14 @@
       "title": "Query Unavailable Reasons",
       "type": "object"
     },
+    "question_entity_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Question Entity Ids",
+      "type": "array"
+    },
     "question_purpose": {
       "anyOf": [
         {

@@ -51,3 +51,13 @@ ARC_VOLUME（包括修订）只输出 `plan_items`；必须显式输出空的
 - 时间边界只来自该条目自己声明的责任：`hint`/`payoff` 受 `reveal_window` 约束，`progression`/`payoff` 受 `timeline_locks`/`progression_locks`/`equipment_locks`/`location_preconditions` 约束。起始章不得早于该责任的 `not_before_chapter`；本卷或其他责任的边界不适用于它。
 - 把实质揭露改标成 `setup` 不会通过：审校器按 `description` 的正文语义判断该键是埋设还是泄底，而不是只看 `role` 标签。
 宿主以 `VOLUME_STAGE_WINDOW: <卷item>.<叙事键>.<字段>: ...` 逐条阻断，并直接点名需要修改的字段路径。
+
+## 卷级粗章集路线图（chapter_set_roadmap）
+
+卷纲不能只说“这一卷讲什么”，还要说这一卷的章节范围如何切成连续的粗剧情块：每块给出
+`slot_id`、`chapter_start`、`chapter_end`、这一段连续情节的 `plot_summary`、`key_cast`、
+`element_refs` 与 `expected_turn`。段落必须从卷首到卷尾连续覆盖、不重不漏，边界要落在真实
+阶段转折上，而不是等长切片。
+
+它是未来意图的粗路线图：用于决定下一个滚动窗口实例化哪一段，而不是宣告那一段已经细化或
+已经发生。正式 CHAPTER_SET 仍按当前窗口单独规划并接纳。

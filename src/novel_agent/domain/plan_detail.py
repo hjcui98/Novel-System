@@ -18,6 +18,7 @@ from __future__ import annotations
 
 from collections.abc import Iterable, Mapping, Sequence
 from enum import StrEnum
+from itertools import pairwise
 from typing import Annotated, Literal, Protocol, runtime_checkable
 
 from pydantic import ConfigDict, Field, field_validator, model_validator
@@ -402,7 +403,13 @@ class ChapterPayloadV2(DomainModel):
     # owns the window-level list; a chapter that performs one repeats it here so
     # the Writer receives the responsibility, not just a reference.
     planned_introductions: tuple[PlannedIntroduction, ...] = ()
-    plan_dependencies: tuple[StableId, ...] = ()
+    # Plan outputs this chapter needs from *earlier chapters of the same
+    # window*.  They are plan dependencies, not historical Needs: a chapter that
+    # needs what an earlier planned chapter will establish must not ask Memory
+    # to retrieve that chapter's uncommitted text.  Each reference names a
+    # chapter index, which is what makes the ordering checkable; comparing a
+    # StableId against the chapter's own integer index could never match.
+    plan_dependencies: tuple[int, ...] = ()
     scenes: tuple[SceneBlueprint, ...] = ()
     budget_characters: int | None = Field(default=None, ge=1)
 
@@ -428,6 +435,15 @@ class ChapterPayloadV2(DomainModel):
             raise ValueError("chapter scene ids must be unique")
         if self.chapter_index in self.plan_dependencies:
             raise ValueError("a chapter cannot depend on itself")
+        if any(index > self.chapter_index for index in self.plan_dependencies):
+            # H07: a within-window dependency may only read *earlier* planned
+            # chapters.  Depending on a later chapter would either require its
+            # uncommitted text or smuggle a future result into the present.
+            raise ValueError(
+                "a chapter plan dependency may only name an earlier chapter of its window"
+            )
+        if len(set(self.plan_dependencies)) != len(self.plan_dependencies):
+            raise ValueError("chapter plan dependencies must be unique")
         declared_here = {item.introduction_id for item in self.planned_introductions}
         unknown = tuple(
             ref.root for ref in self.planned_introduction_refs if ref not in declared_here
@@ -442,6 +458,112 @@ class ChapterPayloadV2(DomainModel):
         """Return every beat every scene of this chapter must cover."""
 
         return tuple(beat.beat_id for scene in self.scenes for beat in scene.beats)
+
+
+class ChapterSetRoadmapEntry(DomainModel):
+    """One coarse chapter-range segment of a volume's rolling roadmap.
+
+    A volume plan says what the volume is about; it must also say how that
+    breaks into consecutive chapter-range blocks, because otherwise a
+    hundred-chapter arc jumps straight to whichever five-chapter window happens
+    to roll next and nothing connects the two scales.  This is a **coarse
+    roadmap of future intent**: it is not a refined chapter set, not an accepted
+    window, and never a statement that the segment has happened.
+    """
+
+    model_config = _PayloadModel
+
+    @field_validator("*", mode="before")
+    @classmethod
+    def _normalize_sequences(cls, value: object) -> object:
+        return _as_tuple(value)
+
+    slot_id: StableId
+    chapter_start: int = Field(ge=1)
+    chapter_end: int = Field(ge=1)
+    plot_summary: NonEmptyText
+    key_cast: tuple[NonEmptyText, ...] = ()
+    element_refs: tuple[NonEmptyText, ...] = ()
+    expected_turn: NonEmptyText
+
+    @model_validator(mode="after")
+    def validate_segment(self) -> ChapterSetRoadmapEntry:
+        if self.chapter_end < self.chapter_start:
+            raise ValueError("roadmap segment end precedes its start")
+        if len(self.plot_summary.strip()) < 20:
+            raise ValueError(
+                "a roadmap segment must describe continuous plot, not a placeholder label"
+            )
+        return self
+
+
+def validate_chapter_set_roadmap(
+    raw: object,
+    *,
+    volume_start: int,
+    volume_end: int,
+    minimum_segments: int = 1,
+) -> tuple[ChapterSetRoadmapEntry, ...]:
+    """Require a volume roadmap to segment its own range consecutively.
+
+    The segments must stay inside the volume, be ordered, and leave no gap: a
+    roadmap with a hole cannot be used to decide which window to instantiate
+    next.  They also must not be a single label repeated N times, which is what
+    "1-10 / 11-20 / 21-30" degenerates into when nobody checks the content.
+    """
+
+    if raw is None:
+        raise ValueError("an accepted volume must declare its chapter_set_roadmap segments")
+    entries = raw if isinstance(raw, (list, tuple)) else (raw,)
+    if len(entries) < minimum_segments:
+        raise ValueError("a volume roadmap requires at least one chapter-range segment")
+    segments: list[ChapterSetRoadmapEntry] = []
+    for entry in entries:
+        try:
+            segments.append(ChapterSetRoadmapEntry.model_validate(entry))
+        except ValueError as error:
+            raise ValueError(f"invalid chapter-set roadmap segment: {error}") from error
+    ordered = sorted(segments, key=lambda item: item.chapter_start)
+    if ordered[0].chapter_start != volume_start:
+        raise ValueError("a volume roadmap must start at the volume's first chapter")
+    if ordered[-1].chapter_end != volume_end:
+        raise ValueError("a volume roadmap must end at the volume's last chapter")
+    for previous, current in pairwise(ordered):
+        if current.chapter_start != previous.chapter_end + 1:
+            raise ValueError(
+                "a volume roadmap must cover its range consecutively, without gaps or overlap"
+            )
+    summaries = {item.plot_summary.strip() for item in segments}
+    if len(segments) > 1 and len(summaries) == 1:
+        raise ValueError("a volume roadmap cannot repeat one summary for every segment")
+    return tuple(ordered)
+
+
+def require_acyclic_plan_dependencies(
+    dependencies: Mapping[int, Sequence[int]],
+) -> None:
+    """Require the within-window plan dependency graph to be acyclic.
+
+    H08: the dependency graph must not contain a cycle.  Because every edge is
+    already required to point at an earlier chapter, a cycle is impossible by
+    construction, but the check stays explicit so a future range or direction
+    change cannot silently reintroduce one.
+    """
+
+    ordered = sorted(dependencies)
+    resolved: set[int] = set()
+    for chapter in ordered:
+        for dependency in dependencies[chapter]:
+            if dependency >= chapter:
+                raise ValueError(
+                    "a chapter plan dependency must name an earlier chapter of its window"
+                )
+            if dependency not in resolved:
+                raise ValueError(
+                    "a chapter plan dependency must be supplied by a chapter that comes "
+                    "before it in the window"
+                )
+        resolved.add(chapter)
 
 
 def require_exact_chapter_coverage(*, start: int, end: int, actual: Sequence[int]) -> None:
@@ -574,6 +696,7 @@ __all__ = [
     "ChapterAssignment",
     "ChapterPayloadV2",
     "ChapterSetPayloadV2",
+    "ChapterSetRoadmapEntry",
     "ElementAction",
     "ExecutionBeatBlueprint",
     "ParentPlanBinding",
@@ -585,8 +708,10 @@ __all__ = [
     "SceneBlueprint",
     "payload_contract_version",
     "plan_node_content_id",
+    "require_acyclic_plan_dependencies",
     "require_exact_chapter_coverage",
     "require_known_facet_references",
+    "validate_chapter_set_roadmap",
     "validate_chapter_set_window",
     "validate_execution_allocation",
 ]

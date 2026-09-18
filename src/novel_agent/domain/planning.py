@@ -304,6 +304,10 @@ VOLUME_STRUCTURE_REQUIRED_KEYS: tuple[str, ...] = (
     "exit_conditions",
     "reveal_window",
     "obligation_plan",
+    # The volume must say how its own range breaks into consecutive chapter-range
+    # blocks.  Without it a hundred-chapter arc jumps straight to whichever
+    # five-chapter window rolls next and the two scales never connect.
+    "chapter_set_roadmap",
 )
 
 

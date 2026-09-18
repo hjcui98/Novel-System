@@ -261,6 +261,7 @@ def _finding(
     finding_id: str = "finding.u8b.command",
     classification: MemoryGapClassification = MemoryGapClassification.CANON_EXTRACTION_GAP,
     owner: MemoryRepairOwner = MemoryRepairOwner.GRAPH_CURATOR,
+    no_progress_key: str | None = None,
 ) -> MemoryRepairFinding:
     return MemoryRepairFinding(
         finding_id=StableId(finding_id),
@@ -293,7 +294,12 @@ def _finding(
         repair_owner=owner,
         target_root_kind=RootKind.WORLD,
         repair_scope=RepairScope(field_paths=("relations",)),
-        no_progress_key=StableId("progress.u8b.command"),
+        # The durable problem key is what binds a maintenance task identity.  Two
+        # findings that describe different problems must carry different keys;
+        # the cross-attempt cases deliberately share one.
+        no_progress_key=StableId(
+            no_progress_key if no_progress_key is not None else f"progress.{finding_id}"
+        ),
     )
 
 
@@ -340,6 +346,10 @@ def test_maintenance_identity_is_bound_to_finding_and_owner_not_long_run() -> No
     other_finding = finding.model_copy(update={"finding_id": StableId("finding.u8b.other")})
     other_owner = finding.model_copy(update={"repair_owner": MemoryRepairOwner.OPERATOR})
 
+    finding = finding.model_copy(update={"no_progress_key": StableId("progress.u8b.command")})
+    other_finding = other_finding.model_copy(
+        update={"no_progress_key": StableId("progress.u8b.command")}
+    )
     first = RuntimeCommandService._maintenance_task_id(finding)
     # The durable problem key leads the identity, so a later attempt that
     # reports the same unrepaired problem on the same frozen source reuses this
@@ -365,7 +375,10 @@ def test_maintenance_identity_falls_back_when_finding_id_is_max_length() -> None
         permission_hash=PERMISSION_HASH,
     )
     finding = _finding(planner, StableId("attempt.u8b.long-finding")).model_copy(
-        update={"finding_id": StableId("f" * 128)}
+        update={
+            "finding_id": StableId("f" * 128),
+            "no_progress_key": StableId("progress.u8b.command"),
+        }
     )
 
     task_id = RuntimeCommandService._maintenance_task_id(finding)
@@ -588,11 +601,17 @@ def _create_runtime_maintenance(
     run_id: str,
     *,
     finding_id: str = "finding.u8b.command",
+    no_progress_key: str | None = None,
 ) -> tuple[TaskRecord, TaskRecord]:
     planner = commands.create_run_and_initial_task(_request(run_id, base))
     attempt, fence = commands.claim(planner.task_id, worker_id="planner")
     commands.mark_started(fence)
-    finding = _finding(planner, attempt.attempt_id, finding_id=finding_id)
+    finding = _finding(
+        planner,
+        attempt.attempt_id,
+        finding_id=finding_id,
+        no_progress_key=no_progress_key,
+    )
     finding_ref = artifacts.put(
         canonical_json_bytes(finding.model_dump(mode="json")),
         "application/vnd.novel-agent.memory-repair-finding+json",
@@ -652,6 +671,7 @@ def test_runtime_maintenance_defers_when_project_writer_lane_is_busy(
         base,
         "run.u8b.runtime-lane-waiter",
         finding_id="finding.u8b.runtime-lane-waiter",
+        no_progress_key="progress.u8b.runtime-lane-waiter",
     )
     port = _MaintenancePort(
         MemoryWriteWorkflowResult(

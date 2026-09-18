@@ -440,6 +440,7 @@ class RetrievalOrchestrator:
                 facet_receipts=FacetSupportEvaluator.not_executed(need),
                 question_purpose=need.question_purpose,
                 dependency_expectation=need.dependency_expectation,
+                question_entity_ids=need.entity_ids,
             )
         all_results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
         candidates: tuple[FusedCandidate, ...] = ()
@@ -596,6 +597,7 @@ class RetrievalOrchestrator:
             graph_exhausted=graph_exhausted,
             question_purpose=need.question_purpose,
             dependency_expectation=need.dependency_expectation,
+            question_entity_ids=need.entity_ids,
         )
 
     def _run_channels(

@@ -915,6 +915,12 @@ class RetrievalTrace(DomainModel):
     # the members of ``novel_agent.domain.planning_gap``.
     question_purpose: str | None = Field(default=None, min_length=1)
     dependency_expectation: str | None = Field(default=None, min_length=1)
+    # The grounded entity set the reviewed question is about, frozen with the
+    # trace.  Admission of a Canon extraction handoff must compare a candidate
+    # witness against *the question's* entities, not against whatever entity the
+    # candidate happens to carry; deriving that set from the candidate itself
+    # would make every candidate its own answer.  Empty preserves legacy traces.
+    question_entity_ids: tuple[StableId, ...] = ()
 
     @model_validator(mode="before")
     @classmethod

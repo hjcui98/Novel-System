@@ -4607,3 +4607,91 @@ PASS. Plugin success does not lift the worker-restart or sandbox notes.
   “改动未引入新失败”，不能报告质量门通过。
 - **历史第 2 章未修订**：`11.3` 要求的受信正文修订路径未在本次会话执行，
   也未用 SQL 或对象文件直接覆盖 Canon。
+
+## 38. 审核后补修：P0/P1/P2 与卷级路线图（2026-09-18 续）
+
+外部审核在 `575afed` 上确认 4 个高优先级缺口与若干 P2 项，逐项复核后**全部成立**并已修复。
+
+### P0 — memory-gap 证据准入过宽（原 G3 死锁根因）
+
+- `_verified_gap_evidence()` 删除了 `source_evidence_requirement is None and
+  unit.evidence_refs => positive_source` 这条弱 fallback。
+- 新增 `_unit_witnesses_proposition()`：只有两种**命题级**证据才算正向支持——
+  预注册 `SourceBoundEvidenceRequirement` 的精确 span/marker 覆盖，或
+  精确 state/relation witness（unit 谓词必须是**被审阅问题点名**的谓词，且 unit 实体属于
+  **问题实体集**）。
+- `projection_expected` 不再恒为 True，改为等于 `positive_source`：没有点名谓词就不该说
+  投影缺了这一条。
+- `RetrievalTrace` 新增 `question_entity_ids`，由 `retrieval.py` 从 Need 的 `entity_ids`
+  冻结下来。问题实体集与候选实体集是两件事；从候选自身取实体等于让候选自证。
+- 回归：`test_g3_name_mention_with_evidence_ref_is_still_not_an_extraction_gap`（命中主角、
+  带真实 `EvidenceRef`、但陈述的是另一个谓词 → `historical_dependency_unresolved`，
+  不派发 Curator），以及“点名谓词 witness 仍走真修复”“未点名谓词不算支持”
+  “别的事实主体的 witness 不算支持”三个对照用例。
+
+### P1 — 稳定问题身份跨 Plan commit
+
+- `_stable_problem_identity()` 与 `_source_evidence_digest()` 不再把 `basis_commit`
+  放进问题身份；改为绑定冻结的 `text_root` / `world_root` / projection snapshot /
+  facet / 预注册 requirement。完整 `base_commit` 仍保留在 finding 与回执中做安全与审计。
+- 回归：`test_problem_identity_survives_an_unrelated_plan_commit` 与
+  `test_problem_identity_changes_when_the_frozen_source_changes`。
+
+### P1 — V2 materializer 完整性
+
+- 每个子章必须通过完整 `ChapterPayloadV2.model_validate()`，不再只看
+  `contract_version` 字符串。
+- 新增父/子 turn 交叉校验：子章 `parent_turn_refs` 必须存在于父项 `plot_turns`，
+  且与该章在 `chapter_assignments` 中承担的 turn 集合一致。
+- `plan_dependencies` 从 `tuple[StableId, ...]` 改为 `tuple[int, ...]`：原来的
+  `chapter_index in plan_dependencies` 是 int 对 StableId，永不相等，自检实际失效。
+  现在拒绝自依赖、重复依赖与指向后章的依赖，并新增
+  `require_acyclic_plan_dependencies()`（H07/H08）。
+- CHAPTER 深化强制保留被接纳的章节点身份：`item_id != existing.plan_node_id` 直接拒绝，
+  不再“作废旧节点 + 插入新节点”。
+- 合并后的根重新走 `PlanRootDocument.model_validate_json()` 再计算内容哈希，
+  `model_copy(update=...)` 不再被当作校验已执行。
+- 回归：`test_every_child_must_satisfy_the_full_chapter_contract`、
+  `test_child_turn_reference_must_exist_in_the_window`、
+  `test_child_and_parent_must_agree_about_the_turns_it_carries`、
+  `test_plan_dependencies_only_name_earlier_chapters`。
+
+### P2 — `_rolling_plan_task()` 旧语义残留
+
+- `plan_level = previous.plan_level or PlanLevel.CHAPTER_SET` 改为固定
+  `PlanLevel.CHAPTER_SET`。任务级/投影级 `plan_level=previous.plan_level` 保留：
+  那里继承的是任务自身层级，不是“上一个窗口的层级”。
+
+### 卷级粗章集路线图（文档 §3.3）
+
+- `domain/plan_detail.py` 新增 `ChapterSetRoadmapEntry` 与
+  `validate_chapter_set_roadmap()`：段落必须从卷首到卷尾连续覆盖、不重不漏、不越界，
+  不得多段共用同一 `plot_summary`，`plot_summary` 不得是占位标签。
+- `VOLUME_STRUCTURE_REQUIRED_KEYS` 增加 `chapter_set_roadmap`；materializer 对每个
+  ARC_VOLUME 节点按该卷自身范围校验。
+- prompt / skill / 动态约束（`ARC_VOLUME_ROADMAP_CONSTRAINTS`）同步说明它是
+  **未来意图的粗路线图**，不是已细化/已发生/已接纳的章集，也不得写成 World relation。
+- 回归：`test_volume_roadmap_must_cover_the_volume_consecutively`、
+  `test_volume_roadmap_rejects_one_repeated_summary`、
+  `test_volume_roadmap_segments_must_differ_in_content`。
+
+### 验证
+
+- 新增/更新测试后本地命令：
+  `NOVEL_AGENT_FORBID_MODEL_CALLS=true .conda-env/bin/pytest -m "not model_required and not integration" -q --no-cov`
+  → **65 failed**；同命令在基线 `dda6938` 的独立 worktree（`tmp/ns-base`）→ **81 failed**。
+  逐项差集：**新增失败 0 项**，修好 16 项（含 5 项 schema、4 项维护/问题身份、
+  3 项卷阶段渲染与评审引用、3 项问句/缺口契约、1 项真实 Writer 链）。
+- `ruff check .`、`ruff format --check .` 通过；`src/` 下 MyPy 0 错误。
+
+### 仍未完成（不记为完成）
+
+- **H13 单一语义来源**：`PlanNode` 与 `ChapterGoal` 仍由同一个 proposal item 分叉生成，
+  尚未改为“先确定 CHAPTER 节点，再由节点确定性投影 ChapterGoal”；
+  `benchmark.py` 也还没有一致性 validator。
+- **`planning_coverage.py` 父责任/执行覆盖报告**、`legacy_readable / outline_valid /
+  execution_valid / writer_ready` 四态派生、`writer_readiness.py` 的 V2 收敛、
+  `planner_context_assembler.py` 三分类显式拆分、`PlanReviewer` 对父子对应/
+  unsupported precondition/执行可行性的独立审查：均未实现。
+- **Batch E 历史第 2 章修订**：未执行。
+- **Batch F 真实 G3**：未运行。

@@ -69,6 +69,7 @@ from novel_agent.domain.plan_detail import (
     plan_node_content_id,
     require_exact_chapter_coverage,
     require_known_facet_references,
+    validate_chapter_set_roadmap,
     validate_chapter_set_window,
 )
 from novel_agent.domain.planning import (
@@ -376,6 +377,14 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 raise CandidateMaterializationError(
                     "a V2 chapter must refine an existing chapter node, not create one"
                 )
+            if proposal.items[0].item_id != existing.plan_node_id:
+                # outline -> execution is a controlled deepening of one chapter
+                # target, not a replacement of its identity.  Accepting a new
+                # node id would invalidate the accepted chapter and insert a
+                # second one for the same chapter index.
+                raise CandidateMaterializationError(
+                    "a V2 chapter refinement must preserve the accepted chapter node identity"
+                )
             if existing.parent_id is None or existing.parent_id.root != (
                 self._existing_chapter_set_parent(current, chapter_payload.chapter_index)
             ):
@@ -440,6 +449,23 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         incoming_goals = tuple(
             goal for item in proposal.items if (goal := self._chapter_goal(item)) is not None
         )
+        # A volume's roadmap must segment that volume's own range; checking it
+        # against the declared range is what keeps "1-10 / 11-20" honest.
+        for node in incoming_nodes:
+            if node.plan_level is not PlanLevel.ARC_VOLUME:
+                continue
+            if node.chapter_start is None or node.chapter_end is None:
+                continue
+            try:
+                validate_chapter_set_roadmap(
+                    node.payload.get("chapter_set_roadmap"),
+                    volume_start=node.chapter_start,
+                    volume_end=node.chapter_end,
+                )
+            except ValueError as error:
+                raise CandidateMaterializationError(
+                    f"volume {node.plan_node_id.root} has an invalid chapter-set roadmap: {error}"
+                ) from error
         world = self._read(base.world_root, WorldRootDocument)
         world, world_ref, obligation_bindings = self._bind_obligation_declarations(
             world,
@@ -532,14 +558,24 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             horizon_start=candidate.horizon_start,
             horizon_end=candidate.horizon_end,
         )
+        merged_goals = tuple(sorted(goals, key=lambda item: item.chapter_index))
+        # ``model_copy(update=...)`` does not re-run validators, so a merge that
+        # produced duplicate ids, a dangling parent, a cycle, an overlapping
+        # sibling range or a child outside its parent would be persisted with a
+        # fresh content address and only fail when some later reader happened to
+        # validate it.  Merge through the model's own fields and then re-validate
+        # the resulting payload, so the root that is written is the root the
+        # contract actually accepts.
         provisional = current.model_copy(
             update={
-                "root_hash": "sha256:" + "0" * 64,
+                "root_hash": ArtifactId("sha256:" + "0" * 64),
                 "nodes": nodes,
-                "chapter_goals": tuple(sorted(goals, key=lambda item: item.chapter_index)),
+                "chapter_goals": merged_goals,
             }
         )
-        updated = provisional.model_copy(update={"root_hash": plan_root_content_id(provisional)})
+        updated = PlanRootDocument.model_validate_json(provisional.model_dump_json()).model_copy(
+            update={"root_hash": plan_root_content_id(provisional)}
+        )
         root_artifact = self._artifacts.put(
             canonical_json_bytes(updated.model_dump(mode="json")),
             PLAN_ROOT_MEDIA_TYPE,
@@ -1009,30 +1045,61 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     "every chapter of a V2 chapter set must declare chapter.v2"
                 )
         payload = ChapterSetPayloadV2.model_validate(semantic.payload)
+        # Every child must satisfy the full chapter contract, not merely carry a
+        # contract_version string.  Without this a child could declare a
+        # chapter.v2 payload whose detail level, scenes or references are
+        # malformed and still reach PlanRoot, because _node()/_chapter_goal()
+        # only read a few convenience keys.
+        chapter_payloads: dict[StableId, ChapterPayloadV2] = {}
+        for child in children:
+            try:
+                child_payload = ChapterPayloadV2.model_validate(child.payload)
+            except ValueError as error:
+                raise CandidateMaterializationError(
+                    f"chapter item {child.item_id.root} is not a valid chapter.v2 payload: {error}"
+                ) from error
+            if child_payload.chapter_index != cls._chapter_number(child.payload):
+                raise CandidateMaterializationError(
+                    f"chapter item {child.item_id.root} declares inconsistent chapter indexes"
+                )
+            chapter_payloads[child.item_id] = child_payload
         child_indexes = tuple(
-            sorted(
-                index
-                for child in children
-                if (index := cls._chapter_number(child.payload)) is not None
-            )
+            sorted(payload_item.chapter_index for payload_item in chapter_payloads.values())
         )
-        if len(child_indexes) != len(children):
-            raise CandidateMaterializationError(
-                "every V2 chapter item must declare its chapter_index"
-            )
         require_exact_chapter_coverage(
             start=payload.chapter_start,
             end=payload.chapter_end,
             actual=child_indexes,
         )
         declared_ids = tuple(item.chapter_node_id for item in payload.chapter_assignments)
-        actual_ids = {child.item_id for child in children}
+        actual_ids = set(chapter_payloads)
         unknown = tuple(item.root for item in declared_ids if item not in actual_ids)
         if unknown:
             raise CandidateMaterializationError(
                 "chapter assignments must reference the proposal's chapter items: "
                 + ", ".join(unknown)
             )
+        # Parent and child must agree about which window turn each chapter
+        # carries; otherwise the parent's responsibility map and the chapter's
+        # own mandate diverge silently.
+        turn_ids = {turn.turn_id for turn in payload.plot_turns}
+        assignment_turns = {
+            item.chapter_node_id: set(item.turn_refs) for item in payload.chapter_assignments
+        }
+        for item_id, child_payload in chapter_payloads.items():
+            declared_child_turns = set(child_payload.parent_turn_refs)
+            unknown_turns = tuple(ref.root for ref in declared_child_turns if ref not in turn_ids)
+            if unknown_turns:
+                raise CandidateMaterializationError(
+                    f"chapter {item_id.root} references a plot turn its window never declared: "
+                    + ", ".join(unknown_turns)
+                )
+            parent_turns = assignment_turns.get(item_id, set())
+            if parent_turns and declared_child_turns != parent_turns:
+                raise CandidateMaterializationError(
+                    f"chapter {item_id.root} and its chapter-set assignment disagree about "
+                    "the window turns it carries"
+                )
         return payload, children
 
     @classmethod

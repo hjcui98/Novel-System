@@ -24,6 +24,10 @@ from novel_agent.adapters.runtime.stage4_planner import (
     Stage4PlanningInvocation,
     Stage4PlanningLeafAdapter,
 )
+from novel_agent.adapters.runtime.stage4_planner import (
+    Stage4PlanningLeafAdapter as Stage4PlannerAdapterSource,
+)
+from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.creative_runtime import (
     AcceptedCandidateBinding,
     ActorKind,
@@ -60,6 +64,7 @@ from novel_agent.domain.memory import (
     Stage1QueryIntent,
 )
 from novel_agent.domain.memory_write import (
+    MemoryGapClassification,
     MemoryRepairFinding,
     MemoryRepairOwner,
     SourceVisibilityReceipt,
@@ -93,6 +98,7 @@ from novel_agent.domain.stage2 import (
     RetrievalBudget,
 )
 from novel_agent.domain.text import EvidenceRef, EvidenceSupportStatus
+from novel_agent.domain.world import TruthClass
 from novel_agent.domain.writing_loop import WritingLoopResult, WritingLoopTerminalStatus
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
@@ -106,6 +112,20 @@ _STAGE4_BUDGETS = PlanningBudgets(
     retrieval=RetrievalBudget(),
     context=ContextBudget(token_budget=4_000),
 )
+
+
+def _artifact_ref(digit: str) -> ArtifactRef:
+    return ArtifactRef(
+        artifact_id=ArtifactId("sha256:" + digit * 64),
+        media_type="application/json",
+        byte_length=1,
+        schema_version=SchemaVersion("1.0.0"),
+    )
+
+
+_TEXT_ROOT_DIGEST = "2"
+_WORLD_ROOT_DIGEST = "3"
+_OTHER_TEXT_ROOT_DIGEST = "4"
 _STAGE4_FINGERPRINT = ArtifactId("sha256:" + "9" * 64)
 
 
@@ -436,6 +456,89 @@ def test_stage4_adapter_never_repairs_canon_for_a_future_design_question(
     assert outcome.result.failure_code == "historical_dependency_unresolved"
 
 
+def test_g3_name_mention_with_evidence_ref_is_still_not_an_extraction_gap(
+    tmp_path: Path,
+) -> None:
+    """The reported G3 deadlock: a sourced hit about the protagonist is not proof.
+
+    The retrieval found a real, cutoff-safe, canon-authored unit carrying an
+    ``EvidenceRef`` that mentions the protagonist.  It did not state the
+    requested appointment document.  Treating that as positive source support
+    handed the Curator a Canon omission it could not extract, it returned
+    ``noop``, and the run looped on the same problem.
+    """
+
+    outcome = _run_stage4_gap_adapter(
+        tmp_path,
+        question_purpose="verify_history",
+        dependency_expectation="must_establish_existing_fact",
+        # The unit is real canon evidence about the protagonist...
+        with_unit_evidence=True,
+        # ...but it states a different predicate than the one the question asks.
+        unit_predicate="current_status",
+        unit_entities=("entity.stage4-gap.protagonist",),
+        named_predicates=("assignment_document",),
+    )
+
+    assert outcome.findings == ()
+    assert outcome.result.failure_code == "historical_dependency_unresolved"
+
+
+def test_a_named_predicate_witness_is_still_a_real_extraction_gap(
+    tmp_path: Path,
+) -> None:
+    """The counterpart: real proposition-level support still routes to repair."""
+
+    outcome = _run_stage4_gap_adapter(
+        tmp_path,
+        question_purpose="verify_history",
+        dependency_expectation="must_establish_existing_fact",
+        with_unit_evidence=True,
+        unit_predicate="assignment_document",
+        unit_entities=("entity.stage4-gap.protagonist",),
+        named_predicates=("assignment_document",),
+    )
+
+    assert len(outcome.findings) == 1
+    assert outcome.findings[0].classification is MemoryGapClassification.CANON_EXTRACTION_GAP
+
+
+def test_a_unit_predicate_the_question_never_named_is_not_support(
+    tmp_path: Path,
+) -> None:
+    """A predicate witness must be the *named* predicate, not any predicate."""
+
+    outcome = _run_stage4_gap_adapter(
+        tmp_path,
+        question_purpose="verify_history",
+        dependency_expectation="must_establish_existing_fact",
+        with_unit_evidence=True,
+        unit_predicate="residence",
+        unit_entities=("entity.stage4-gap.protagonist",),
+        named_predicates=(),
+    )
+
+    assert outcome.findings == ()
+    assert outcome.result.failure_code == "historical_dependency_unresolved"
+
+
+def test_a_witness_for_another_entity_is_not_support(tmp_path: Path) -> None:
+    """A correct predicate on an unrelated entity does not answer the question."""
+
+    outcome = _run_stage4_gap_adapter(
+        tmp_path,
+        question_purpose="verify_history",
+        dependency_expectation="must_establish_existing_fact",
+        with_unit_evidence=True,
+        unit_predicate="assignment_document",
+        unit_entities=("entity.stage4-gap.bystander",),
+        named_predicates=("assignment_document",),
+        question_entities=("entity.stage4-gap.protagonist",),
+    )
+
+    assert outcome.findings == ()
+
+
 def test_stage4_adapter_splits_a_mixed_facet_problem_by_owner(tmp_path: Path) -> None:
     """Q11: only the confirmed relation facet reaches the Graph Curator."""
 
@@ -480,6 +583,10 @@ def _run_stage4_gap_adapter(
     dependency_expectation: str | None = None,
     with_unit_evidence: bool = True,
     extra_facet_kind: NeedFacetKind | None = None,
+    unit_predicate: str = "经脉状态",
+    unit_entities: tuple[str, ...] = ("entity.stage4-gap.protagonist",),
+    named_predicates: tuple[str, ...] = ("经脉状态",),
+    question_entities: tuple[str, ...] = ("entity.stage4-gap.protagonist",),
 ) -> _GapAdapterOutcome:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "stage4-gap"))
     author_ref = artifacts.put(b"author intent", "text/plain", SchemaVersion("1.0.0"))
@@ -522,11 +629,15 @@ def _run_stage4_gap_adapter(
         unit_kind=RetrievalUnitKind.RELATION_ANCHOR,
         source_commit=CommitId("sha256:" + "1" * 64),
         snapshot_id=StableId("snapshot.stage4-gap"),
-        text="fixture relation candidate",
-        # A Canon extraction handoff requires real cutoff-safe source evidence
-        # for the requested proposition, not merely a retrieved candidate.
+        text="fixture relation candidate stating a predicate",
+        # A Canon extraction handoff requires a proposition-level witness, not
+        # merely a retrieved candidate.  This unit witnesses the exact
+        # predicate the reviewed question names, for the grounded entity.
         narrative_start=4,
         evidence_refs=(evidence,) if with_unit_evidence else (),
+        entity_ids=(tuple(StableId(item) for item in unit_entities) if with_unit_evidence else ()),
+        predicate=unit_predicate if with_unit_evidence else None,
+        truth_class=TruthClass.ACCEPTED_WORLD_FACT if with_unit_evidence else None,
     )
     extra_facet_id = StableId("facet.stage4-gap.causal")
     extra_receipts = (
@@ -585,10 +696,17 @@ def _run_stage4_gap_adapter(
         question_purpose=question_purpose,
         dependency_expectation=dependency_expectation,
         compiled_query_bundle={
-            "semantic_query": "陈长生、国教学院 的当前关系状态是什么? 具体问题: 陈长生当前经脉状态",
-            "lexical_queries": ["第4章结束时陈长生经脉状态"],
+            # The reviewed question text is what names the predicate.
+            "semantic_query": (
+                "陈长生 的当前状态是什么? 具体问题: 陈长生当前" + "、".join(named_predicates)
+            ),
+            "lexical_queries": ["第4章结束时陈长生" + "".join(named_predicates)],
+            # The reviewed question explicitly names these predicates, which is
+            # what makes the frozen projection the right place to look for them.
+            "predicates": list(named_predicates),
         },
         l0_fallback_evidence_refs=(evidence,),
+        question_entity_ids=tuple(StableId(item) for item in question_entities),
     )
     context = Stage1ContextPackage(
         context_id=StableId("context.stage4-gap"),
@@ -873,3 +991,86 @@ def test_trusted_materializer_preserves_max_length_identity() -> None:
     identity = "i" * 128
 
     assert PlanCandidateMaterializer._stable_id("bundle", identity).root == identity
+
+
+def test_problem_identity_survives_an_unrelated_plan_commit() -> None:
+    """A plan acceptance must not make an unchanged problem look like a new one.
+
+    The reported loop was: noop, the Planner revises the plan, the project
+    commit changes, the same question is asked again, and the Curator is sent the
+    same extraction repair a second time.  The stable problem key therefore binds
+    the frozen source facts, not the enclosing Canon commit.
+    """
+
+    from novel_agent.domain.planning import PlanningLoopRequest as Stage4Request
+
+    def request(basis: str) -> Stage4Request:
+        return Stage4Request.model_construct(
+            request_id=StableId(f"request.stage4-gap.{basis}"),
+            run_id=RunId("run.stage4-gap"),
+            task_id=TaskId("task.stage4-gap"),
+            project_id=ProjectId("project.test"),
+            task=PlanningTask.model_construct(
+                planning_task_id=StableId("task.stage4-gap"),
+                project_id=ProjectId("project.test"),
+                mode=AgentMode.CHAPTER,
+                base_commit=CommitId("sha256:" + basis * 64),
+                source_ids=(StableId("source.author"),),
+            ),
+            author_intent_artifacts=(),
+            accepted_text_ref=_artifact_ref(_TEXT_ROOT_DIGEST),
+            accepted_world_ref=_artifact_ref(_WORLD_ROOT_DIGEST),
+            snapshot_id=StableId("snapshot.stage4-gap"),
+            budgets=_STAGE4_BUDGETS,
+            configuration_fingerprint=_STAGE4_FINGERPRINT,
+            model_fingerprint=_STAGE4_FINGERPRINT,
+        )
+
+    def digest(detailed: Stage4Request) -> str:
+        return Stage4PlannerAdapterSource._source_evidence_digest(
+            detailed,
+            unresolved_facets=(StableId("facet.stage4-gap"),),
+            source_evidence_requirement=None,
+        )
+
+    # Only the enclosing Canon commit differs, which is what a plan acceptance
+    # changes.
+    assert digest(request("1")) == digest(request("2"))
+
+
+def test_problem_identity_changes_when_the_frozen_source_changes() -> None:
+    """The counterpart: a genuinely different source state is a new opportunity."""
+
+    from novel_agent.domain.planning import PlanningLoopRequest as Stage4Request
+
+    def request(text_digest: str) -> Stage4Request:
+        return Stage4Request.model_construct(
+            request_id=StableId("request.stage4-gap"),
+            run_id=RunId("run.stage4-gap"),
+            task_id=TaskId("task.stage4-gap"),
+            project_id=ProjectId("project.test"),
+            task=PlanningTask.model_construct(
+                planning_task_id=StableId("task.stage4-gap"),
+                project_id=ProjectId("project.test"),
+                mode=AgentMode.CHAPTER,
+                base_commit=CommitId("sha256:" + "1" * 64),
+                source_ids=(StableId("source.author"),),
+            ),
+            author_intent_artifacts=(),
+            accepted_text_ref=_artifact_ref(text_digest),
+            accepted_world_ref=_artifact_ref(_WORLD_ROOT_DIGEST),
+            snapshot_id=StableId("snapshot.stage4-gap"),
+            budgets=_STAGE4_BUDGETS,
+            configuration_fingerprint=_STAGE4_FINGERPRINT,
+            model_fingerprint=_STAGE4_FINGERPRINT,
+        )
+
+    assert Stage4PlannerAdapterSource._source_evidence_digest(
+        request(_TEXT_ROOT_DIGEST),
+        unresolved_facets=(StableId("facet.stage4-gap"),),
+        source_evidence_requirement=None,
+    ) != Stage4PlannerAdapterSource._source_evidence_digest(
+        request(_OTHER_TEXT_ROOT_DIGEST),
+        unresolved_facets=(StableId("facet.stage4-gap"),),
+        source_evidence_requirement=None,
+    )

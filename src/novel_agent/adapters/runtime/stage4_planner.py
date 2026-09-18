@@ -748,6 +748,7 @@ class Stage4PlanningLeafAdapter:
         disposition = self._classify_memory_gap(
             request,
             trace,
+            unresolved_facets=unresolved_facets,
             source_evidence_requirement=source_evidence_requirement,
         )
         if disposition is not GapDisposition.CANON_EXTRACTION_GAP:
@@ -824,7 +825,7 @@ class Stage4PlanningLeafAdapter:
             trace_need_id=trace.need_id,
             unresolved_facets=unresolved_facets,
             source_evidence_digest=self._source_evidence_digest(
-                request,
+                detailed,
                 unresolved_facets=unresolved_facets,
                 source_evidence_requirement=source_evidence_requirement,
             ),
@@ -955,6 +956,7 @@ class Stage4PlanningLeafAdapter:
         request: PlanningLoopRequest,
         trace: object,
         *,
+        unresolved_facets: tuple[StableId, ...],
         source_evidence_requirement: SourceBoundEvidenceRequirement | None,
     ) -> GapDisposition:
         """Return the host-verified disposition of one unresolved facet set.
@@ -976,6 +978,7 @@ class Stage4PlanningLeafAdapter:
         evidence = self._verified_gap_evidence(
             request,
             trace,
+            unresolved_facets=unresolved_facets,
             source_evidence_requirement=source_evidence_requirement,
         )
         return classify_gap(
@@ -989,15 +992,23 @@ class Stage4PlanningLeafAdapter:
         request: PlanningLoopRequest,
         trace: object,
         *,
+        unresolved_facets: tuple[StableId, ...],
         source_evidence_requirement: SourceBoundEvidenceRequirement | None,
     ) -> VerifiedGapEvidence:
         """Read the frozen retrieval trace into host-verified gap evidence.
 
         Positive source support requires exact, cutoff-safe, canon-authored
-        evidence for the requested proposition.  A retrieval permission, a
+        evidence *for the requested proposition*.  A retrieval permission, a
         paragraph that happens to mention a participant, or a plan-authored
         unit is not support, and the absence of support is never a negative
         answer.
+
+        In particular, holding an ``EvidenceRef`` is not proposition support.
+        The reported G3 deadlock came from exactly that shortcut: a selected
+        unit about the protagonist carried a real evidence reference, so the
+        gap was handed to the Curator as a Canon omission even though no source
+        stated the requested appointment document.  The Curator then had
+        nothing to extract, returned ``noop``, and the run looped.
         """
 
         cutoff = request.chapter_index
@@ -1017,11 +1028,11 @@ class Stage4PlanningLeafAdapter:
                 continue
             if not self._unit_is_cutoff_safe(unit, cutoff):
                 continue
-            if self._unit_meets_source_evidence_requirement(unit, source_evidence_requirement):
-                positive_source = True
-                break
-            if source_evidence_requirement is None and tuple(
-                getattr(unit, "evidence_refs", ()) or ()
+            if self._unit_witnesses_proposition(
+                unit,
+                trace,
+                unresolved_facets=unresolved_facets,
+                source_evidence_requirement=source_evidence_requirement,
             ):
                 positive_source = True
                 break
@@ -1033,11 +1044,134 @@ class Stage4PlanningLeafAdapter:
             positive_source_support=positive_source,
             positive_projection_support=False,
             explicit_negative_support=explicit_negative,
-            # The frozen source is expected to carry the record type this facet
-            # names, which is exactly what makes a supported source without a
-            # matching projection an extraction gap.
-            projection_expected=True,
+            # Only a named predicate makes the frozen projection the right place
+            # to look for this fact.  A bare mention of a participant does not,
+            # so an unqualified hit can never be called a missing projection.
+            projection_expected=positive_source,
         )
+
+    def _unit_witnesses_proposition(
+        self,
+        unit: object,
+        trace: object,
+        *,
+        unresolved_facets: tuple[StableId, ...],
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None,
+    ) -> bool:
+        """Return whether one unit actually states the requested proposition.
+
+        Only two things qualify, and both are proposition-level:
+
+        * a pre-registered :class:`SourceBoundEvidenceRequirement` whose exact
+          artifact, span and consequence markers the unit's text covers; or
+        * an exact state/relation witness in the frozen projection whose
+          predicate the reviewed question explicitly names.
+
+        A unit that merely carries an ``EvidenceRef``, or that mentions one of
+        the question's entities while stating something else, does not qualify.
+        That distinction is what keeps "not found" from being reported as "the
+        canon omitted it".
+        """
+
+        if self._unit_meets_source_evidence_requirement(unit, source_evidence_requirement):
+            return True
+        if source_evidence_requirement is not None:
+            # A pre-registered requirement is authoritative: when it is present,
+            # nothing weaker may substitute for it.
+            return False
+        unit_predicate = str(getattr(unit, "predicate", "") or "").strip().casefold()
+        if not unit_predicate:
+            # A unit that names no predicate cannot witness a named fact.
+            return False
+        named_predicates = self._named_proposition_predicates(unit, trace)
+        if not named_predicates:
+            return False
+        return (
+            bool(
+                set(getattr(unit, "entity_ids", ()) or ())
+                & self._question_entity_ids(trace, unresolved_facets=unresolved_facets)
+            )
+            and unit_predicate in named_predicates
+        )
+
+    @staticmethod
+    def _question_entity_ids(
+        trace: object,
+        *,
+        unresolved_facets: tuple[StableId, ...],
+    ) -> set[StableId]:
+        """Return the grounded entity ids the reviewed question is about.
+
+        The set travels on the frozen trace, because the reviewed question's
+        grounded entities and a candidate's entities are different things: using
+        the candidate's own entities would let any candidate witness its own
+        proposition.  A trace predating the field falls back to the selected
+        candidates' entities, which preserves legacy admission behaviour.
+        """
+
+        del unresolved_facets
+        declared = tuple(getattr(trace, "question_entity_ids", ()) or ())
+        if declared:
+            return set(declared)
+        return {
+            entity_id
+            for candidate in getattr(trace, "candidates", ())
+            if getattr(candidate, "selected", False)
+            for entity_id in getattr(candidate.unit, "entity_ids", ()) or ()
+        }
+
+    @staticmethod
+    def _named_proposition_predicates(unit: object, trace: object) -> set[str]:
+        """Return the predicates the reviewed question explicitly names.
+
+        The compiled query bundle and the facet's declared predicate bindings
+        are both host-owned: the admission routine never invents a predicate
+        from the unit it is trying to judge.
+        """
+
+        bundle = getattr(trace, "compiled_query_bundle", {})
+        query_texts: list[str] = []
+        if isinstance(bundle, Mapping):
+            for key in ("semantic_query", "lexical_queries"):
+                value = bundle.get(key)
+                if isinstance(value, str):
+                    query_texts.append(value)
+                elif isinstance(value, (list, tuple)):
+                    query_texts.extend(str(item) for item in value)
+        raw_predicates = bundle.get("predicates") if isinstance(bundle, Mapping) else None
+        declared: list[str] = []
+        if isinstance(raw_predicates, (list, tuple)):
+            declared.extend(str(item) for item in raw_predicates if str(item).strip())
+        unit_predicate = str(getattr(unit, "predicate", "") or "").strip().casefold()
+        if not unit_predicate:
+            return set()
+        mentioned = any(
+            Stage4PlanningLeafAdapter._token_is_named(unit_predicate, query)
+            for query in query_texts
+        )
+        return (
+            {unit_predicate}
+            if mentioned or unit_predicate in {item.casefold() for item in declared}
+            else set()
+        )
+
+    @staticmethod
+    def _token_is_named(predicate: str, query: str) -> bool:
+        """Match one predicate in a question, token-aware for identifier names."""
+
+        normalized = predicate.strip().casefold()
+        if not normalized:
+            return False
+        folded = query.casefold()
+        if re.fullmatch(r"[a-z0-9_]+", normalized):
+            return (
+                re.search(
+                    rf"(?<![a-z0-9_]){re.escape(normalized)}(?![a-z0-9_])",
+                    folded,
+                )
+                is not None
+            )
+        return normalized in folded
 
     @staticmethod
     def _unit_is_cutoff_safe(unit: object, cutoff: int) -> bool:
@@ -1107,22 +1241,21 @@ class Stage4PlanningLeafAdapter:
     ) -> StableId:
         """Return the cross-attempt dedup identity of one Planner problem.
 
-        It contains the project, the source-fact version, the cutoff, the
+        It contains the project, the frozen source facts, the cutoff, the
         normalized question, the facet set and the trusted source binding.  It
-        deliberately excludes run identity, attempt identity and any random
-        question identity, so retrying the same unresolved problem cannot queue
-        a second identical maintenance task.  A real change to the source
-        evidence digest does yield a new opportunity.
+        deliberately excludes run identity, attempt identity, any random
+        question identity, **and the enclosing Canon commit**: a plan
+        acceptance changes the project commit without changing the text, the
+        world, the question or the evidence, and re-dispatching the identical
+        repair after every plan revision is exactly the loop this identity
+        exists to stop.  A real change to the frozen source digest does yield a
+        new opportunity.
         """
 
         semantic = semantic_question or trace_need_id.root
-        if request.basis_snapshot is None:  # pragma: no cover - post-Genesis invariant
-            raise ValueError("Planner gap identity requires an exact basis snapshot")
         digest = content_id(
             {
                 "project": request.project_id.root,
-                "basis_commit": request.basis_commit.root,
-                "basis_snapshot": request.basis_snapshot.root,
                 "cutoff": request.chapter_index,
                 "semantic_question": semantic,
                 "facets": tuple(sorted(item.root for item in unresolved_facets)),
@@ -1133,19 +1266,38 @@ class Stage4PlanningLeafAdapter:
 
     @staticmethod
     def _source_evidence_digest(
-        request: PlanningLoopRequest,
+        detailed: Stage4PlanningLoopRequest,
         *,
         unresolved_facets: tuple[StableId, ...],
         source_evidence_requirement: SourceBoundEvidenceRequirement | None,
     ) -> str:
-        """Return a digest of the frozen source state this problem reads."""
+        """Return a digest of the frozen source facts this problem reads.
 
-        if request.basis_snapshot is None:  # pragma: no cover - post-Genesis invariant
-            raise ValueError("Planner gap identity requires an exact basis snapshot")
-        return content_id(
+        The digest binds the two roots the repair can actually change — the
+        frozen TextRoot and WorldRoot — rather than the whole Canon commit.
+        The full ``base_commit`` remains on the finding for safety checks and
+        audit, but it is not part of the problem identity: committing an
+        unrelated plan revision must not make an unchanged problem look new.
+        """
+
+        digest = content_id(
             {
-                "basis_commit": request.basis_commit.root,
-                "basis_snapshot": request.basis_snapshot.root,
+                "text_root": (
+                    None
+                    if detailed.accepted_text_ref is None
+                    else detailed.accepted_text_ref.artifact_id.root
+                ),
+                "world_root": (
+                    None
+                    if detailed.accepted_world_ref is None
+                    else detailed.accepted_world_ref.artifact_id.root
+                ),
+                # The snapshot names the exact derived projection the trace was
+                # built from, so an actually rebuilt projection is a new fact
+                # state; a plan-only commit does not change it.
+                "projection_snapshot": (
+                    detailed.snapshot_id.root if detailed.snapshot_id is not None else None
+                ),
                 "facets": tuple(sorted(item.root for item in unresolved_facets)),
                 "requirement": (
                     None
@@ -1154,6 +1306,7 @@ class Stage4PlanningLeafAdapter:
                 ),
             }
         ).root.removeprefix("sha256:")[:32]
+        return digest
 
     @staticmethod
     def _source_chapter_indices(
