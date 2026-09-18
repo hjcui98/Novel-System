@@ -36,6 +36,13 @@ from novel_agent.domain.ids import (
 )
 from novel_agent.domain.memory import DerivedBuildStatus, WorldRootDocument
 from novel_agent.domain.model_calls import ModelRequest
+from novel_agent.domain.plan_detail import (
+    CHAPTER_CONTRACT_VERSION,
+    ChapterPayloadV2,
+    PlannedIntroduction,
+    PlanParticipant,
+    SceneBlueprint,
+)
 from novel_agent.domain.plan_obligation_scope import scoped_plan_obligation_ids
 from novel_agent.domain.runtime import TaskRecord
 from novel_agent.domain.stage2 import FutureIsolationAttestation, ProjectProfileRootDocument
@@ -212,6 +219,11 @@ def _volume_stage_constraints(nodes: Sequence[PlanNode], chapter_index: int) -> 
     visible as a prohibition against cashing the stage's result in early,
     because the volume's exit is the one thing a mid-volume chapter must not
     resolve.
+
+    Stage position is not evidence.  Reaching the middle of a volume does not
+    make the volume's entry conditions true, so a passed opening slot is
+    rendered as a plan responsibility that must already have been established
+    and still needs verification -- never as an established fact.
     """
 
     constraints: list[str] = []
@@ -251,11 +263,27 @@ def _volume_stage_constraints(nodes: Sequence[PlanNode], chapter_index: int) -> 
                         "（本章不得提前兑现或解决本卷出口结果）"  # noqa: RUF001
                     )
                 else:
+                    # The opening already passed, so this slot was due.  That
+                    # makes it a plan responsibility the accepted plan asked a
+                    # chapter to discharge, not proof that it happened: the
+                    # Writer must check the accepted facts before assuming it.
                     constraints.append(
-                        f"当前卷阶段[{label}·入口已成立:entry_conditions]：{slot.body}"  # noqa: RUF001
-                        "（本卷入口条件已经成立，本章不得与之矛盾）"  # noqa: RUF001
+                        f"当前卷阶段[{label}·入口待核实:entry_conditions]：{slot.body}"  # noqa: RUF001
+                        "（按已接纳计划本项应已建立，属于计划要求而非既成事实；"  # noqa: RUF001
+                        "本章只能使用已在当前事实中核实到的部分，不得把未核实项当作已经发生）"  # noqa: RUF001
                     )
     return tuple(dict.fromkeys(constraints))
+
+
+@dataclass(frozen=True, slots=True)
+class _CompiledChapterExecution:
+    """Writer-visible structure compiled from one accepted V2 chapter payload."""
+
+    scene_blueprints: tuple[SceneBlueprint, ...] = ()
+    planned_participants: tuple[PlanParticipant, ...] = ()
+    planned_introductions: tuple[PlannedIntroduction, ...] = ()
+    scene_goals: tuple[str, ...] = ()
+    required_beats: tuple[str, ...] = ()
 
 
 @dataclass(frozen=True, slots=True)
@@ -349,6 +377,57 @@ class ProductionWritingRequestFactory:
         self._policy = policy
         self._schema_version = schema_version
         self._snapshots = snapshots
+
+    @staticmethod
+    def _compile_chapter_execution(
+        goals: Sequence[ChapterGoal],
+        *,
+        chapter_index: int,
+    ) -> _CompiledChapterExecution:
+        """Compile accepted V2 chapter detail into Writer-visible structure.
+
+        A V1 chapter goal carries only string beats, so the compiled result is
+        empty and the existing string path stays authoritative.  A V2 goal
+        keeps its stable scene and beat identities, its plan-local participants
+        and its planned introductions; the host rejects a malformed payload
+        instead of dropping it.
+        """
+
+        payloads = tuple(
+            goal.payload
+            for goal in goals
+            if goal.payload.get("contract_version") == CHAPTER_CONTRACT_VERSION
+        )
+        if not payloads:
+            return _CompiledChapterExecution()
+        if len(payloads) != 1:
+            raise ValueError("a Writer target chapter must have exactly one V2 chapter payload")
+        payload = ChapterPayloadV2.model_validate(payloads[0])
+        if payload.chapter_index != chapter_index:
+            raise ValueError("V2 chapter payload targets a different chapter")
+        if payload.detail_level != "execution":
+            # An outline-only chapter is not writable; the runtime must refine it
+            # first.  Failing here keeps that rule true even if a caller bypasses
+            # the scheduler.
+            raise ValueError("a V2 chapter must be refined to execution before the Writer runs")
+        scene_goals = tuple(
+            f"{scene.scene_id.root}: {scene.narrative_task}" for scene in payload.scenes
+        )
+        required_beats = tuple(
+            f"{beat.beat_id.root}: {beat.action} / 阻力: {beat.resistance} / "
+            f"选择: {beat.choice} / 结果: {beat.outcome} / 收束: {beat.close_point}"
+            for scene in payload.scenes
+            for beat in scene.beats
+        )
+        return _CompiledChapterExecution(
+            scene_blueprints=payload.scenes,
+            planned_participants=tuple(
+                item for item in payload.cast if item.reference_kind == "planned"
+            ),
+            planned_introductions=payload.planned_introductions,
+            scene_goals=scene_goals,
+            required_beats=required_beats,
+        )
 
     def _projection_is_exact(self, task: TaskRecord) -> bool:
         """Prove the task's Memory snapshot is the exact published projection.
@@ -516,6 +595,10 @@ class ProductionWritingRequestFactory:
                 )
             )
         )
+        # V2 chapter detail is compiled explicitly.  Flattening it through the
+        # string helpers above would silently drop the accepted scene and beat
+        # identities, leaving the Writer to re-invent the chapter it was given.
+        execution = self._compile_chapter_execution(goals, chapter_index=task.chapter_index)
         unknown_entities = set(participating_entity_ids) - {
             entity.entity_id for entity in world.entities
         }
@@ -616,8 +699,8 @@ class ProductionWritingRequestFactory:
                 profile, "narrative_person", self._policy.narrative_person
             ),
             chapter_goal=chapter_goal,
-            scene_goals=required_beats,
-            required_beats=required_beats,
+            scene_goals=execution.scene_goals or required_beats,
+            required_beats=execution.required_beats or required_beats,
             active_plan_obligations=obligation_ids,
             mandatory_constraints=(
                 *language_constraint,
@@ -647,6 +730,9 @@ class ProductionWritingRequestFactory:
             participating_entity_ids=participating_entity_ids,
             obligation_actions=obligation_actions,
             length_policy=self._length_policy(profile),
+            scene_blueprints=execution.scene_blueprints,
+            planned_participants=execution.planned_participants,
+            planned_introductions=execution.planned_introductions,
         )
         writing_task_artifact = self._artifacts.put(
             canonical_json_bytes(writing_task.model_dump(mode="json")),

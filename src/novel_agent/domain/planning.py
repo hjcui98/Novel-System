@@ -21,6 +21,7 @@ from novel_agent.domain.base import DomainModel
 from novel_agent.domain.ids import ArtifactId, CommitId, ProjectId, RunId, StableId, TaskId
 from novel_agent.domain.memory import NeedFacetKind
 from novel_agent.domain.model_calls import ModelCallLedgerAggregate
+from novel_agent.domain.planning_gap import DependencyExpectation, QuestionPurpose
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -77,6 +78,29 @@ class PlanningQuestionKind(StrEnum):
     HUMAN_CHOICE = "human_choice"
 
 
+class PlanningQuestionDraft(DomainModel):
+    """The provider-facing portion of a Planner question.
+
+    ``PlanningQuestion`` also carries host-owned semantics: which purpose the
+    question serves, what the reviewed plan expects its answer to be, and which
+    plan item the question originated from.  Those values decide whether a
+    non-answer becomes a Canon repair or a plan precondition conflict, so a
+    model response must not be able to set them.  Keeping this schema free of
+    those fields removes the ability rather than validating it after the fact.
+    """
+
+    model_config = ConfigDict(extra="ignore", strict=True, frozen=True)
+
+    kind: PlanningQuestionKind
+    question: str = Field(min_length=1)
+    goal_id: StableId
+    entity_labels: tuple[str, ...] = ()
+    relation_subject: str | None = Field(default=None, min_length=1)
+    relation_predicate: str | None = Field(default=None, min_length=1)
+    relation_object: str | None = Field(default=None, min_length=1)
+    blocking: bool = False
+
+
 class PlanningQuestion(DomainModel):
     question_id: StableId
     kind: PlanningQuestionKind
@@ -88,6 +112,13 @@ class PlanningQuestion(DomainModel):
     relation_predicate: str | None = Field(default=None, min_length=1)
     relation_object: str | None = Field(default=None, min_length=1)
     blocking: bool = False
+    # Host-derived semantics for the planning/memory boundary.  All three are
+    # optional so historical inquiry artifacts stay readable; a newly reviewed
+    # question always receives them from the host, never from the model.
+    question_purpose: QuestionPurpose | None = None
+    dependency_expectation: DependencyExpectation | None = None
+    origin_plan_item_id: StableId | None = None
+    origin_field_path: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="after")
     def validate_relation(self) -> PlanningQuestion:
@@ -96,6 +127,11 @@ class PlanningQuestion(DomainModel):
             item is not None for item in relation
         ):
             raise ValueError("planning relation question requires subject/predicate/object")
+        if (
+            self.question_purpose is QuestionPurpose.DESIGN_FUTURE
+            and self.dependency_expectation is DependencyExpectation.MUST_ESTABLISH_EXISTING_FACT
+        ):
+            raise ValueError("a question that designs the future cannot require an existing fact")
         return self
 
 
@@ -202,8 +238,8 @@ class PlanningInquiryDraft(DomainModel):
     horizon_end: int | None = Field(default=None, ge=1)
     goal_proposals: tuple[GoalProposal, ...] = Field(min_length=1)
     alternatives: tuple[str, ...] = ()
-    assumptions: tuple[PlanningQuestion, ...] = ()
-    questions: tuple[PlanningQuestion, ...] = ()
+    assumptions: tuple[PlanningQuestionDraft, ...] = ()
+    questions: tuple[PlanningQuestionDraft, ...] = ()
     decision_criteria: tuple[str, ...] = ()
     expected_output_shape: str = Field(min_length=1)
     human_choices: tuple[str, ...] = ()
@@ -237,6 +273,11 @@ class ReviewIssueKind(StrEnum):
     OBLIGATION_CONTRACT = "obligation_contract"
     UNRESOLVED_SCOPE_MISSING = "unresolved_scope_missing"
     VOLUME_STAGE_WINDOW_VIOLATION = "volume_stage_window_violation"
+    UNSUPPORTED_PLAN_PRECONDITION = "unsupported_plan_precondition"
+    CHAPTER_SET_SEMANTIC_GAP = "chapter_set_semantic_gap"
+    PARENT_CHILD_CORRESPONDENCE = "parent_child_correspondence"
+    EXECUTION_COVERAGE = "execution_coverage"
+    PLANNED_INTRODUCTION_RESPONSIBILITY = "planned_introduction_responsibility"
 
 
 # The minimum executable volume outline (2026-09-10 remediation P0-5).  A

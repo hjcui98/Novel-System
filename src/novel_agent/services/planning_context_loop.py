@@ -9,7 +9,11 @@ from typing import TypeVar, cast
 from pydantic import BaseModel, JsonValue
 
 from novel_agent.agents.plan_reviewer import PlanReviewerAgent, PlanReviewerInvocationError
-from novel_agent.agents.planner import PlannerAgent, PlannerInvocationError
+from novel_agent.agents.planner import (
+    PlannerAgent,
+    PlannerInvocationError,
+    question_boundary_semantics,
+)
 from novel_agent.agents.runner import AgentExecutionError
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import TextRootDocument
@@ -63,6 +67,7 @@ from novel_agent.domain.planning import (
     ReviewIssueKind,
     ReviewTargetKind,
 )
+from novel_agent.domain.planning_gap import TrustedQuestionIntent
 from novel_agent.domain.stage2 import (
     AccessScope,
     AgentMode,
@@ -187,6 +192,15 @@ def _planner_memory_questions(
         # U8-C split comparability.  Reuse the reviewed question identity
         # instead of minting a planner-memory id from model text.
         return (seeded[0].model_copy(update={"blocking": True}),)
+    # The model spent a turn asking Memory for prior evidence.  That is a
+    # history request at every planning level, so it can never be relabelled as
+    # future design to escape an evidence check.
+    purpose, expectation = question_boundary_semantics(
+        mode=inquiry.mode,
+        intent=TrustedQuestionIntent.REQUESTED_MEMORY_EVIDENCE,
+        kind=PlanningQuestionKind.FACT,
+        blocking=True,
+    )
     return tuple(
         PlanningQuestion(
             question_id=_planner_memory_question_id(inquiry.inquiry_id, question),
@@ -195,6 +209,8 @@ def _planner_memory_questions(
             provenance=PlanningReference(provenance=PlanningProvenance.PLANNER_PROPOSED),
             goal_id=inquiry.goal_proposals[0].goal_id,
             blocking=True,
+            question_purpose=purpose,
+            dependency_expectation=expectation,
         )
         for question in questions
     )
@@ -1003,6 +1019,15 @@ class PlanningContextLoopService:
                 event_refs,
                 diagnostics=("POST_GENESIS_BASIS_MISMATCH",),
             )
+        # A history Need has two deadlines: it must end before its own target
+        # chapter and it must not read a chapter the project has not committed.
+        # Only the first is visible in a model response, so the host supplies
+        # the second from the frozen TextRoot it already validated.
+        committed_text_cutoff = (
+            text_root.chapters[-1].chapter_index
+            if text_root is not None and text_root.chapters
+            else 0
+        )
         if revision_parent is not None and revision_review is not None and world is not None:
             controlled_revision_evidence = self._controlled_revision_evidence_payload(
                 world,
@@ -1829,6 +1854,7 @@ class PlanningContextLoopService:
                                     *planner_memory_context_refs,
                                 ),
                                 parent_proposal_id=revision_parent_id,
+                                committed_text_cutoff=committed_text_cutoff,
                                 reviewed_inquiry_ref=inquiry_ref,
                                 memory_need_ids=planner_context.need_ids,
                                 evidence_refs=planner_context.evidence_refs,
@@ -2038,6 +2064,7 @@ class PlanningContextLoopService:
                                     *planner_memory_context_refs,
                                 ),
                                 parent_proposal_id=revision_parent_id,
+                                committed_text_cutoff=committed_text_cutoff,
                                 reviewed_inquiry_ref=inquiry_ref,
                                 memory_need_ids=planner_context.need_ids,
                                 evidence_refs=planner_context.evidence_refs,
@@ -2090,6 +2117,7 @@ class PlanningContextLoopService:
                                             *planner_memory_context_refs,
                                         ),
                                         parent_proposal_id=revision_parent_id,
+                                        committed_text_cutoff=committed_text_cutoff,
                                         reviewed_inquiry_ref=inquiry_ref,
                                         memory_need_ids=planner_context.need_ids,
                                         evidence_refs=planner_context.evidence_refs,
@@ -2191,6 +2219,7 @@ class PlanningContextLoopService:
                         evidence_refs=planner_context.evidence_refs,
                         graph_path_receipt_refs=planner_context.graph_path_receipt_refs,
                         parent_proposal_id=revision_parent_id,
+                        committed_text_cutoff=committed_text_cutoff,
                         request=model_request(
                             "plan_revision" if revision_parent is not None else "plan",
                             request.task.mode,
@@ -2227,6 +2256,7 @@ class PlanningContextLoopService:
                         *planner_memory_context_refs,
                     ),
                     parent_proposal_id=revision_parent_id,
+                    committed_text_cutoff=committed_text_cutoff,
                     reviewed_inquiry_ref=inquiry_ref,
                     memory_need_ids=planner_context.need_ids,
                     evidence_refs=planner_context.evidence_refs,
@@ -2271,6 +2301,7 @@ class PlanningContextLoopService:
                                 *planner_memory_context_refs,
                             ),
                             parent_proposal_id=revision_parent_id,
+                            committed_text_cutoff=committed_text_cutoff,
                             reviewed_inquiry_ref=inquiry_ref,
                             memory_need_ids=planner_context.need_ids,
                             evidence_refs=planner_context.evidence_refs,
@@ -2345,6 +2376,7 @@ class PlanningContextLoopService:
                                 *planner_memory_context_refs,
                             ),
                             parent_proposal_id=revision_parent_id,
+                            committed_text_cutoff=committed_text_cutoff,
                             reviewed_inquiry_ref=inquiry_ref,
                             memory_need_ids=planner_context.need_ids,
                             evidence_refs=planner_context.evidence_refs,
@@ -2400,6 +2432,7 @@ class PlanningContextLoopService:
                                     *planner_memory_context_refs,
                                 ),
                                 parent_proposal_id=revision_parent_id,
+                                committed_text_cutoff=committed_text_cutoff,
                                 reviewed_inquiry_ref=inquiry_ref,
                                 memory_need_ids=planner_context.need_ids,
                                 evidence_refs=planner_context.evidence_refs,
@@ -2760,6 +2793,15 @@ class PlanningContextLoopService:
                         diagnostics=("REVIEWER_MEMORY_SLICE_EXHAUSTED",),
                     )
                 assert world is not None and text_root is not None
+                # An independent reviewer asserted a fact the candidate needs.
+                # It stays a hard historical prerequisite: the loop must either
+                # resolve it or revise the plan, never silently downgrade it.
+                gap_purpose, gap_expectation = question_boundary_semantics(
+                    mode=request.task.mode,
+                    intent=TrustedQuestionIntent.REVIEWER_GAP_QUESTION,
+                    kind=PlanningQuestionKind.FACT,
+                    blocking=True,
+                )
                 gap_questions = tuple(
                     PlanningQuestion(
                         question_id=StableId(
@@ -2773,6 +2815,8 @@ class PlanningContextLoopService:
                         ),
                         goal_id=inquiry.goal_proposals[0].goal_id,
                         blocking=True,
+                        question_purpose=gap_purpose,
+                        dependency_expectation=gap_expectation,
                     )
                     for index, question in enumerate(plan_review.memory_gap_questions)
                 )
@@ -3069,6 +3113,7 @@ class PlanningContextLoopService:
                 evidence_refs=planner_context.evidence_refs,
                 graph_path_receipt_refs=planner_context.graph_path_receipt_refs,
                 parent_proposal_id=parent_proposal.proposal_id,
+                committed_text_cutoff=committed_text_cutoff,
                 request=model_request("plan_revision", request.task.mode, attempt),
                 allowed_skill_ids=planner_skill_allowlist(include_alternative=True),
             )

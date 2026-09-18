@@ -1169,10 +1169,15 @@ class RuntimeCommandService:
     @staticmethod
     def _maintenance_task_id(finding: MemoryRepairFinding) -> TaskId:
         owner = finding.repair_owner.value
+        # The durable problem key leads so that retrying the same unresolved
+        # problem on the same frozen source maps onto one maintenance task.
+        # Keep the readable finding identity as the first fallback for short
+        # findings, and the attempt-bound forms last for legacy artifacts whose
+        # problem key was attempt-scoped.
         value = _bounded_runtime_identity(
+            f"maintenance.{finding.no_progress_key.root}.{owner}",
             f"maintenance.{finding.finding_id.root}.{owner}",
             f"maintenance.{finding.incident_id.root}.{finding.planner_attempt_id.root}.{owner}",
-            f"maintenance.{finding.no_progress_key.root}.{finding.planner_attempt_id.root}.{owner}",
             f"maintenance.{finding.planner_task_id.root}.{finding.planner_attempt_id.root}.{owner}",
         )
         return TaskId(value.root)

@@ -107,8 +107,8 @@
       "title": "PlanningProvenance",
       "type": "string"
     },
-    "PlanningQuestion": {
-      "additionalProperties": false,
+    "PlanningQuestionDraft": {
+      "description": "The provider-facing portion of a Planner question.\n\n``PlanningQuestion`` also carries host-owned semantics: which purpose the\nquestion serves, what the reviewed plan expects its answer to be, and which\nplan item the question originated from.  Those values decide whether a\nnon-answer becomes a Canon repair or a plan precondition conflict, so a\nmodel response must not be able to set them.  Keeping this schema free of\nthose fields removes the ability rather than validating it after the fact.",
       "properties": {
         "blocking": {
           "default": false,
@@ -129,16 +129,10 @@
         "kind": {
           "$ref": "#/$defs/PlanningQuestionKind"
         },
-        "provenance": {
-          "$ref": "#/$defs/PlanningReference"
-        },
         "question": {
           "minLength": 1,
           "title": "Question",
           "type": "string"
-        },
-        "question_id": {
-          "$ref": "#/$defs/StableId"
         },
         "relation_object": {
           "anyOf": [
@@ -181,13 +175,11 @@
         }
       },
       "required": [
-        "question_id",
         "kind",
         "question",
-        "provenance",
         "goal_id"
       ],
-      "title": "PlanningQuestion",
+      "title": "PlanningQuestionDraft",
       "type": "object"
     },
     "PlanningQuestionKind": {
@@ -255,7 +247,7 @@
     "assumptions": {
       "default": [],
       "items": {
-        "$ref": "#/$defs/PlanningQuestion"
+        "$ref": "#/$defs/PlanningQuestionDraft"
       },
       "title": "Assumptions",
       "type": "array"
@@ -328,7 +320,7 @@
     "questions": {
       "default": [],
       "items": {
-        "$ref": "#/$defs/PlanningQuestion"
+        "$ref": "#/$defs/PlanningQuestionDraft"
       },
       "title": "Questions",
       "type": "array"

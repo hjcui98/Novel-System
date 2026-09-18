@@ -341,10 +341,15 @@ def test_maintenance_identity_is_bound_to_finding_and_owner_not_long_run() -> No
     other_owner = finding.model_copy(update={"repair_owner": MemoryRepairOwner.OPERATOR})
 
     first = RuntimeCommandService._maintenance_task_id(finding)
-    assert first.root == "maintenance.finding.u8b.command.graph_curator"
+    # The durable problem key leads the identity, so a later attempt that
+    # reports the same unrepaired problem on the same frozen source reuses this
+    # task instead of queueing a second identical repair.
+    assert first.root == "maintenance.progress.u8b.command.graph_curator"
     assert len(first.root) <= 128
-    assert RuntimeCommandService._maintenance_task_id(other_finding) != first
+    assert RuntimeCommandService._maintenance_task_id(other_finding) == first
     assert RuntimeCommandService._maintenance_task_id(other_owner) != first
+    other_problem = finding.model_copy(update={"no_progress_key": StableId("progress.u8b.other")})
+    assert RuntimeCommandService._maintenance_task_id(other_problem) != first
 
 
 def test_maintenance_identity_falls_back_when_finding_id_is_max_length() -> None:
@@ -365,8 +370,14 @@ def test_maintenance_identity_falls_back_when_finding_id_is_max_length() -> None
 
     task_id = RuntimeCommandService._maintenance_task_id(finding)
 
-    assert task_id.root == "maintenance.incident.u8b.command.attempt.u8b.long-finding.graph_curator"
+    # Both attempts of the same problem must land on this one identity even
+    # when the readable finding id cannot fit alongside the owner.
+    assert task_id.root == "maintenance.progress.u8b.command.graph_curator"
     assert len(task_id.root) <= 128
+    later_attempt = finding.model_copy(
+        update={"planner_attempt_id": StableId("attempt.u8b.long-finding.2")}
+    )
+    assert RuntimeCommandService._maintenance_task_id(later_attempt) == task_id
 
 
 def test_gap_settlement_blocks_planner_and_creates_unblocked_maintenance(

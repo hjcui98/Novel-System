@@ -17,9 +17,21 @@ from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
 from novel_agent.domain.planning import (
     PlanningInquiry,
     PlanningInquiryDraft,
+    PlanningProvenance,
+    PlanningQuestion,
+    PlanningQuestionDraft,
+    PlanningQuestionKind,
+    PlanningReference,
     PlanningTurnAction,
     PlanningTurnDraft,
     PlanningTurnOutput,
+)
+from novel_agent.domain.planning_gap import (
+    DependencyExpectation,
+    QuestionPurpose,
+    TrustedPlanningMode,
+    TrustedQuestionIntent,
+    resolve_question_semantics,
 )
 from novel_agent.domain.retrieval_decision import (
     FIRST_CHAPTER_WAIVER_REF,
@@ -47,6 +59,7 @@ from novel_agent.domain.stage2 import (
     ProjectProfileProposal,
     PromptContractRef,
     ProposalProvenance,
+    ProposedItem,
     SkillContractRef,
     ToolPermission,
     ToolPolicy,
@@ -93,6 +106,85 @@ def constrain_planner_selected_skills(
 ) -> tuple[StableId, ...]:
     allowed = set(planner_skill_ids_for_mode(mode))
     return tuple(item for item in selected if item in allowed)
+
+
+#: Stage 4 Planner modes expressed as the leaf boundary vocabulary, so the
+#: domain classifier never has to import the agent layer.
+_TRUSTED_PLANNING_MODE_BY_AGENT_MODE = {
+    AgentMode.PROJECT_BOOTSTRAP: TrustedPlanningMode.PROJECT_BOOTSTRAP,
+    AgentMode.STORY: TrustedPlanningMode.STORY,
+    AgentMode.ARC_VOLUME: TrustedPlanningMode.ARC_VOLUME,
+    AgentMode.CHAPTER_SET: TrustedPlanningMode.CHAPTER_SET,
+    AgentMode.CHAPTER: TrustedPlanningMode.CHAPTER,
+    AgentMode.SCENE: TrustedPlanningMode.SCENE,
+    AgentMode.REPLAN: TrustedPlanningMode.REPLAN,
+}
+
+_FACT_QUESTION_KINDS = frozenset({PlanningQuestionKind.FACT, PlanningQuestionKind.RELATION_CAUSAL})
+
+
+def trusted_planning_mode(mode: AgentMode) -> TrustedPlanningMode:
+    """Map a host-bound Stage 4 Planner mode onto the leaf boundary vocabulary."""
+
+    trusted = _TRUSTED_PLANNING_MODE_BY_AGENT_MODE.get(mode)
+    if trusted is None:
+        raise PlannerInvocationError("planning question requires a Stage 4 Planner mode")
+    return trusted
+
+
+def question_boundary_semantics(
+    *,
+    mode: AgentMode,
+    intent: TrustedQuestionIntent,
+    kind: PlanningQuestionKind,
+    blocking: bool,
+) -> tuple[QuestionPurpose, DependencyExpectation]:
+    """Expose the host-side question semantics for non-inquiry call sites."""
+
+    return resolve_question_semantics(
+        mode=trusted_planning_mode(mode),
+        intent=intent,
+        kind_is_fact=kind in _FACT_QUESTION_KINDS,
+        blocking=blocking,
+    )
+
+
+def promote_question_draft(
+    draft: PlanningQuestionDraft,
+    *,
+    mode: AgentMode,
+    intent: TrustedQuestionIntent,
+    question_id: StableId,
+    provenance: PlanningReference,
+) -> PlanningQuestion:
+    """Bind host-derived semantics onto one reviewed Planner question.
+
+    The model supplies what it is asking and which goal it serves.  The host
+    supplies the identity, the provenance, and the purpose/expectation pair
+    that decides whether a non-answer becomes a Canon repair or a plan
+    precondition conflict.
+    """
+
+    purpose, expectation = question_boundary_semantics(
+        mode=mode,
+        intent=intent,
+        kind=draft.kind,
+        blocking=draft.blocking,
+    )
+    return PlanningQuestion(
+        question_id=question_id,
+        kind=draft.kind,
+        question=draft.question,
+        provenance=provenance,
+        goal_id=draft.goal_id,
+        entity_labels=draft.entity_labels,
+        relation_subject=draft.relation_subject,
+        relation_predicate=draft.relation_predicate,
+        relation_object=draft.relation_object,
+        blocking=draft.blocking,
+        question_purpose=purpose,
+        dependency_expectation=expectation,
+    )
 
 
 INQUIRY_OUTPUT_CONSTRAINTS = (
@@ -165,6 +257,27 @@ PLANNING_TURN_OUTPUT_CONSTRAINTS = (
     "retrieve prior historical evidence from already committed chapters; NEVER ask how the "
     "target chapter's own events happen, and never use words like '如何', '怎样', '怎么', "
     "'何时', '是否会' to ask about the target chapter's own beats or summary. "
+    "CHAPTER_SET_V2_CONSTRAINTS=This is a restricted 1+N composite proposal, not a batch of "
+    "chapter goals. plan_items must contain exactly one parent item with kind 'chapter_set' and "
+    "payload.contract_version 'chapter-set.v2', plus exactly one child per horizon chapter with "
+    "kind 'goal' and payload.contract_version 'chapter.v2' and detail_level 'outline'. The parent "
+    "must state the window's own course (summary, dramatic_question, entry_requirements, ordered "
+    "plot_turns with stable turn_id, chapter_assignments covering every chapter exactly once and "
+    "naming each child item_id as chapter_node_id, exit_targets, optional cast/element_actions/"
+    "responsibility_assignments/planned_introductions/hold_for_later). Never emit another "
+    "chapter_set, a STORY or ARC_VOLUME item, a chapter outside the horizon, or a "
+    "parent_set_binding / parent_content_hash value: the host owns the parent binding. "
+    "A planned participant uses "
+    '{"reference_kind":"planned",...} and must never claim a Canon entity_id; never put a planned '
+    "reference into participating_entity_ids and never pre-write a World relation for a planned "
+    "object. entry_requirements and exit_targets are plan intent, not established facts. "
+    "CHAPTER_V2_CONSTRAINTS=A CHAPTER proposal refines exactly one chapter in place and must keep "
+    "the host-supplied goal_id, chapter_index and chapter set parent. Use payload.contract_version "
+    "'chapter.v2'. For detail_level 'execution' every scene needs an ordered beats list, and every "
+    "execution beat must reference at least one existing required parent beat id and state action, "
+    "resistance, choice, outcome, information_revealed, prose_focus, budget_characters and "
+    "close_point. Do not invent parent beat ids, do not change the chapter's core outcome or "
+    "parent task without an explicit revision directive, and do not rewrite sibling chapters. "
     "REVISION_CONSTRAINT=If SOURCE_DATA contains a controlled revision directive and a "
     "REVISION_PARENT_SCOPE, this is a bounded repair: return only the explicitly authorized "
     "items and fields and return PLAN_READY; the host restores everything else from the "
@@ -384,6 +497,93 @@ class PlannerInvocationError(ValueError):
 BOOTSTRAP_UNRESOLVED_LIMIT = 24
 
 
+def validate_history_retrieval_contract(
+    plan_items: tuple[ProposedItem, ...],
+    *,
+    mode: AgentMode,
+    committed_text_cutoff: int | None = None,
+) -> None:
+    """Enforce the two deadlines a Planner history Need must respect.
+
+    A history Need may only read material the project has already committed and
+    that lies before its own target chapter::
+
+        source_chapter_end <= min(target_chapter - 1, committed_text_cutoff)
+
+    Only the first deadline is visible in a model response.  The committed text
+    cutoff is host state, so the host calls this function with the real cutoff
+    and the model-boundary validator calls it without one.
+    """
+
+    if mode is not AgentMode.CHAPTER_SET:
+        return
+    for item in plan_items:
+        chapter_index = item.payload.get("chapter_index")
+        if not isinstance(chapter_index, int) or isinstance(chapter_index, bool):
+            continue
+        raw = item.payload.get("history_retrieval")
+        if chapter_index == 1 and raw is None:
+            continue
+        if not isinstance(raw, dict):
+            raise ValueError(
+                f"chapter {chapter_index} requires a structured history_retrieval decision"
+            )
+        decision = HistoryRetrievalDecision.model_validate_json(json.dumps(raw))
+        if chapter_index == 1:
+            if (
+                decision.requirement is not HistoryRetrievalRequirement.NOT_REQUIRED
+                or decision.reason_code is not HistoryRetrievalReasonCode.FIRST_CHAPTER
+                or decision.waiver_ref != FIRST_CHAPTER_WAIVER_REF
+            ):
+                raise ValueError(
+                    "chapter 1 must omit history_retrieval or use the exact host "
+                    "first-chapter waiver"
+                )
+            continue
+        if decision.requirement is not HistoryRetrievalRequirement.REQUIRED:
+            raise ValueError(
+                f"chapter {chapter_index} model output must use REQUIRED history retrieval; "
+                "a planning model cannot issue its own waiver"
+            )
+        target_texts = tuple(
+            text
+            for value in (
+                item.payload.get("summary"),
+                item.payload.get("beats"),
+                item.payload.get("state_changes"),
+            )
+            for text in (value if isinstance(value, list) else (value,))
+            if isinstance(text, str)
+        )
+        for need in decision.needs:
+            if need.source_chapter_end is None or need.source_chapter_end >= chapter_index:
+                raise ValueError(
+                    f"chapter {chapter_index} history Need must end before the target chapter"
+                )
+            if (
+                committed_text_cutoff is not None
+                and need.source_chapter_end > committed_text_cutoff
+            ):
+                # ``< target`` is not enough: an uncommitted earlier chapter
+                # cannot be retrieved either.  Without this deadline a window
+                # planned from cursor 5 could ask chapter 10's Need to read
+                # chapter 9 before chapter 9 exists.
+                raise ValueError(
+                    f"chapter {chapter_index} history Need exceeds the committed text cutoff "
+                    f"{committed_text_cutoff}"
+                )
+            if any(
+                entity_id.root.startswith("planner-context.unit.") for entity_id in need.entity_ids
+            ):
+                raise ValueError(
+                    f"chapter {chapter_index} history Need contains a display-layer entity ID"
+                )
+            if history_need_targets_same_chapter(need.query, target_texts):
+                raise ValueError(
+                    f"chapter {chapter_index} history Need asks for its own future target event"
+                )
+
+
 class _ModelPlannerProposalDraft(PlannerProposalDraft):
     """Provider-facing draft that keeps unresolved identities host-owned."""
 
@@ -412,62 +612,11 @@ class _ModelPlannerProposalDraft(PlannerProposalDraft):
 
     @model_validator(mode="after")
     def validate_chapter_set_history_contract(self) -> _ModelPlannerProposalDraft:
-        if self.mode is not AgentMode.CHAPTER_SET:
-            return self
-        for item in self.plan_items:
-            chapter_index = item.payload.get("chapter_index")
-            if not isinstance(chapter_index, int) or isinstance(chapter_index, bool):
-                continue
-            raw = item.payload.get("history_retrieval")
-            if chapter_index == 1 and raw is None:
-                continue
-            if not isinstance(raw, dict):
-                raise ValueError(
-                    f"chapter {chapter_index} requires a structured history_retrieval decision"
-                )
-            decision = HistoryRetrievalDecision.model_validate_json(json.dumps(raw))
-            if chapter_index == 1:
-                if (
-                    decision.requirement is not HistoryRetrievalRequirement.NOT_REQUIRED
-                    or decision.reason_code is not HistoryRetrievalReasonCode.FIRST_CHAPTER
-                    or decision.waiver_ref != FIRST_CHAPTER_WAIVER_REF
-                ):
-                    raise ValueError(
-                        "chapter 1 must omit history_retrieval or use the exact host "
-                        "first-chapter waiver"
-                    )
-                continue
-            if decision.requirement is not HistoryRetrievalRequirement.REQUIRED:
-                raise ValueError(
-                    f"chapter {chapter_index} model output must use REQUIRED history retrieval; "
-                    "a planning model cannot issue its own waiver"
-                )
-            target_texts = tuple(
-                text
-                for value in (
-                    item.payload.get("summary"),
-                    item.payload.get("beats"),
-                    item.payload.get("state_changes"),
-                )
-                for text in (value if isinstance(value, list) else (value,))
-                if isinstance(text, str)
-            )
-            for need in decision.needs:
-                if need.source_chapter_end is None or need.source_chapter_end >= chapter_index:
-                    raise ValueError(
-                        f"chapter {chapter_index} history Need must end before the target chapter"
-                    )
-                if any(
-                    entity_id.root.startswith("planner-context.unit.")
-                    for entity_id in need.entity_ids
-                ):
-                    raise ValueError(
-                        f"chapter {chapter_index} history Need contains a display-layer entity ID"
-                    )
-                if history_need_targets_same_chapter(need.query, target_texts):
-                    raise ValueError(
-                        f"chapter {chapter_index} history Need asks for its own future target event"
-                    )
+        # The model-side shape check runs at the provider boundary.  The
+        # committed-text cutoff (the second deadline a history Need must
+        # respect) is host state, so the host repeats the whole check in
+        # ``validate_history_retrieval_contract`` with the real cutoff.
+        validate_history_retrieval_contract(self.plan_items, mode=self.mode)
         return self
 
 
@@ -741,6 +890,7 @@ class PlannerAgent:
         parent_proposal_id: StableId | None = None,
         allowed_skill_ids: tuple[StableId, ...] | None = None,
         profile_only_source_ids: tuple[StableId, ...] = (),
+        committed_text_cutoff: int | None = None,
     ) -> tuple[PlannerExecutionResult, ModelCallRecord]:
         if len(source_artifacts) != len(task.source_ids) or len(
             {artifact.artifact_id for artifact in source_artifacts}
@@ -781,6 +931,7 @@ class PlannerAgent:
             graph_path_receipt_refs=graph_path_receipt_refs,
             parent_proposal_id=parent_proposal_id,
             profile_only_source_ids=profile_only_source_ids,
+            committed_text_cutoff=committed_text_cutoff,
         )
         return result, execution.model_call
 
@@ -800,6 +951,7 @@ class PlannerAgent:
         parent_proposal_id: StableId | None = None,
         allowed_skill_ids: tuple[StableId, ...] | None = None,
         profile_only_source_ids: tuple[StableId, ...] = (),
+        committed_text_cutoff: int | None = None,
     ) -> tuple[PlanningTurnOutput, PlannerExecutionResult | None, ModelCallRecord]:
         """Run one autonomous Planner turn without granting direct retrieval access."""
 
@@ -871,6 +1023,7 @@ class PlannerAgent:
             graph_path_receipt_refs=graph_path_receipt_refs,
             parent_proposal_id=parent_proposal_id,
             profile_only_source_ids=profile_only_source_ids,
+            committed_text_cutoff=committed_text_cutoff,
         )
         return (
             PlanningTurnOutput(
@@ -901,9 +1054,19 @@ class PlannerAgent:
         graph_path_receipt_refs: tuple[ArtifactRef, ...],
         parent_proposal_id: StableId | None,
         profile_only_source_ids: tuple[StableId, ...] = (),
+        committed_text_cutoff: int | None = None,
     ) -> PlannerExecutionResult:
         if draft.mode is not task.mode or draft.strategy is not task.strategy:
             raise PlannerInvocationError("Planner draft mode/strategy differs from trusted task")
+        # The model boundary already checked the shape of every history
+        # decision.  Re-check it here with the real committed-text cutoff, so a
+        # window planned from chapter 5 cannot ask chapter 10's Need to read an
+        # uncommitted chapter 9.
+        validate_history_retrieval_contract(
+            draft.plan_items,
+            mode=draft.mode,
+            committed_text_cutoff=committed_text_cutoff,
+        )
         allowed_sources = set(task.source_ids)
         authored_items = (
             *draft.project_intent_items,
@@ -1060,16 +1223,13 @@ class PlannerAgent:
             resolved_horizon_start = draft.horizon_start
             resolved_horizon_end = draft.horizon_end
         allowed_sources = set(task.source_ids)
-        references = (
-            *(item.provenance for item in draft.goal_proposals),
-            *(item.provenance for item in draft.assumptions),
-            *(item.provenance for item in draft.questions),
-        )
         if any(
             reference.provenance.value == "author_supplied"
             and not set(reference.reference_ids).issubset(allowed_sources)
-            for reference in references
+            for reference in (item.provenance for item in draft.goal_proposals)
         ):
+            # Reviewed questions are host-bound to PLANNER_PROPOSED provenance,
+            # so only goal proposals can still claim an author source here.
             raise PlannerInvocationError("Planning inquiry cites a foreign author source")
         identity = content_id(
             {
@@ -1086,6 +1246,42 @@ class PlannerAgent:
             resolved_generation = 2 if generation is None else generation
         if resolved_generation < 1 or (parent_inquiry_id is not None and resolved_generation < 2):
             raise PlannerInvocationError("Planning inquiry generation is inconsistent")
+        # The model names what it asks; the host decides whether the question
+        # verifies history or designs future content.  Deriving the boundary
+        # semantics here is what stops a model from escaping an evidence check
+        # by relabelling a real prerequisite.
+        reviewed_provenance = PlanningReference(provenance=PlanningProvenance.PLANNER_PROPOSED)
+
+        def reviewed_question(
+            item: PlanningQuestionDraft,
+            *,
+            role: str,
+            ordinal: int,
+        ) -> PlanningQuestion:
+            digest = content_id(
+                {
+                    "inquiry": identity,
+                    "role": role,
+                    "ordinal": ordinal,
+                    "question": item.model_dump(mode="json"),
+                }
+            ).root.removeprefix("sha256:")[:24]
+            return promote_question_draft(
+                item,
+                mode=task.mode,
+                intent=TrustedQuestionIntent.REVIEWED_INQUIRY_QUESTION,
+                question_id=StableId(f"planning-question.{role}.{digest}"),
+                provenance=reviewed_provenance,
+            )
+
+        reviewed_assumptions = tuple(
+            reviewed_question(item, role="assumption", ordinal=index)
+            for index, item in enumerate(draft.assumptions)
+        )
+        reviewed_questions = tuple(
+            reviewed_question(item, role="question", ordinal=index)
+            for index, item in enumerate(draft.questions)
+        )
         inquiry = PlanningInquiry(
             inquiry_id=StableId(f"planning-inquiry.{identity}"),
             project_id=task.project_id,
@@ -1097,8 +1293,8 @@ class PlannerAgent:
             explicit_overrides=explicit_overrides,
             goal_proposals=draft.goal_proposals,
             alternatives=draft.alternatives,
-            assumptions=draft.assumptions,
-            questions=draft.questions,
+            assumptions=reviewed_assumptions,
+            questions=reviewed_questions,
             decision_criteria=draft.decision_criteria,
             expected_output_shape=draft.expected_output_shape,
             human_choices=draft.human_choices,

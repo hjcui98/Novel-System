@@ -26,7 +26,7 @@ from novel_agent.domain.planning import (
     GoalProposal,
     PlanningInquiryDraft,
     PlanningProvenance,
-    PlanningQuestion,
+    PlanningQuestionDraft,
     PlanningQuestionKind,
     PlanningReference,
     PlanningTurnAction,
@@ -246,11 +246,11 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
                 ),
             ),
             questions=(
-                PlanningQuestion(
-                    question_id=StableId(f"question.chapter.{chapter}.injury"),
+                # The provider schema deliberately omits the host-owned
+                # boundary semantics, so the fake model cannot carry them.
+                PlanningQuestionDraft(
                     kind=PlanningQuestionKind.FACT,
                     question="What is Lin's current injury state?",
-                    provenance=PlanningReference(provenance=PlanningProvenance.PLANNER_PROPOSED),
                     goal_id=goal_id,
                     entity_labels=("林澈",),
                 ),
@@ -276,20 +276,76 @@ class ProductionChapterEndpoint(FakeModelEndpoint):
                 ),
             )
         ).model_dump(mode="json", exclude_none=True)
+        horizon = ProductionChapterEndpoint._horizon(prompt)
+        chapter_indexes = tuple(range(horizon[0], horizon[1] + 1))
         return PlannerProposalDraft(
             mode=AgentMode.CHAPTER_SET,
             plan_items=(
+                # One semantic chapter-set parent plus one honest outline per
+                # chapter: the V2 1+N composite the materializer requires.
                 ProposedItem(
-                    item_id=StableId(f"plan.chapter.{chapter}"),
-                    kind="chapter",
+                    item_id=StableId(f"plan.chapter-set.{chapter}-{horizon[1]}"),
+                    kind="chapter_set",
                     payload={
-                        "title": "Enter the tower",
-                        "summary": _CHAPTER_GOAL,
-                        "chapter_index": chapter,
-                        "obligation_ids": ["obligation.synthetic.north-tower"],
-                        "history_retrieval": history_retrieval,
+                        "contract_version": "chapter-set.v2",
+                        "chapter_start": horizon[0],
+                        "chapter_end": horizon[1],
+                        "summary": (
+                            "Lin enters the tower, holds to the injury constraint, and "
+                            "leaves the next chapter a concrete unresolved pressure."
+                        ),
+                        "dramatic_question": (
+                            "Can Lin reach the inner ward without reopening the injury?"
+                        ),
+                        "entry_requirements": [
+                            "The committed text ends with the injury still healing.",
+                        ],
+                        "plot_turns": [
+                            {
+                                "turn_id": "turn.window.open",
+                                "summary": "Lin commits to entering the tower.",
+                                "responsibility": "establish the window's action",
+                            }
+                        ],
+                        "chapter_assignments": [
+                            {
+                                "chapter_index": index,
+                                "chapter_node_id": f"plan.chapter.{index}",
+                                "narrative_task": f"Chapter {index} advances the entry.",
+                                "turn_refs": ["turn.window.open"],
+                                "expected_change": f"Chapter {index} changes the situation.",
+                                "next_chapter_interface": "Hand the pressure onward.",
+                            }
+                            for index in chapter_indexes
+                        ],
+                        "exit_targets": ["Lin is inside and the injury is unchanged."],
                     },
                     provenance=ProposalProvenance.PLANNER_PROPOSED,
+                ),
+                *(
+                    ProposedItem(
+                        item_id=StableId(f"plan.chapter.{index}"),
+                        kind="goal",
+                        payload={
+                            "contract_version": "chapter.v2",
+                            "detail_level": "outline",
+                            "title": "Enter the tower",
+                            "summary": _CHAPTER_GOAL,
+                            "narrative_function": (
+                                "Advance the accepted window's entry responsibility."
+                            ),
+                            "chapter_index": index,
+                            "parent_turn_refs": ["turn.window.open"],
+                            "beats": ["Lin commits to the entry."],
+                            "entry_state_dependencies": ["The injury is still healing."],
+                            "expected_exit_change": "Lin is one step further in.",
+                            "next_chapter_interface": "Leave the pressure unresolved.",
+                            "obligation_ids": ["obligation.synthetic.north-tower"],
+                            "history_retrieval": history_retrieval,
+                        },
+                        provenance=ProposalProvenance.PLANNER_PROPOSED,
+                    )
+                    for index in chapter_indexes
                 ),
             ),
             unresolved=(),

@@ -438,6 +438,8 @@ class RetrievalOrchestrator:
                     else ()
                 ),
                 facet_receipts=FacetSupportEvaluator.not_executed(need),
+                question_purpose=need.question_purpose,
+                dependency_expectation=need.dependency_expectation,
             )
         all_results: dict[RetrievalChannel, tuple[ChannelHit, ...]] = {}
         candidates: tuple[FusedCandidate, ...] = ()
@@ -592,6 +594,8 @@ class RetrievalOrchestrator:
             graph_path_count=len(selected_graph_paths),
             graph_seed_entity_ids=(seed_ids if relation_or_causal else ()),
             graph_exhausted=graph_exhausted,
+            question_purpose=need.question_purpose,
+            dependency_expectation=need.dependency_expectation,
         )
 
     def _run_channels(

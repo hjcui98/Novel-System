@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from dataclasses import dataclass
 from datetime import UTC, datetime
 from pathlib import Path
 from types import SimpleNamespace
@@ -29,6 +30,7 @@ from novel_agent.domain.creative_runtime import (
     CandidateBinding,
     CandidateKind,
     PlanningLoopRequest,
+    PlanningLoopResult,
     PlanningTerminalStatus,
 )
 from novel_agent.domain.generation import WritingLoopRequest
@@ -381,6 +383,104 @@ def test_stage4_adapter_keeps_a_proposalless_escalation_waiting(tmp_path: Path) 
 
 
 def test_stage4_adapter_binds_evidence_limited_memory_gap_finding(tmp_path: Path) -> None:
+    outcome = _run_stage4_gap_adapter(tmp_path)
+    assert len(outcome.findings) == 1
+    finding = outcome.findings[0]
+    artifacts = outcome.artifacts
+
+    assert finding.planner_attempt_id == StableId("attempt.stage4-gap")
+    assert finding.cutoff.chapter_index == 4
+    assert finding.no_progress_key.root.startswith("memory-problem.")
+    assert finding.attempt_problem_key is not None
+    assert finding.source_artifact_refs
+    assert finding.repair_owner is MemoryRepairOwner.GRAPH_CURATOR
+    assert finding.need_query == "陈长生当前经脉状态"
+    assert finding.semantic_question == "预注册: 陈长生当前经脉状态"
+    visibility = SourceVisibilityReceipt.model_validate_json(
+        artifacts.read_verified(finding.source_visibility_receipt_refs[0]), strict=True
+    )
+    assert visibility.source_artifact == finding.source_artifact_refs[0]
+    assert visibility.boundary_id == finding.information_boundary.boundary_id
+    assert visibility.visible_through == finding.cutoff
+
+
+def test_stage4_adapter_reports_unresolved_dependency_when_source_is_silent(
+    tmp_path: Path,
+) -> None:
+    """Q02: name mentions and retrieval permission are not proposition support."""
+
+    outcome = _run_stage4_gap_adapter(
+        tmp_path,
+        question_purpose="verify_history",
+        dependency_expectation="must_establish_existing_fact",
+        with_unit_evidence=False,
+    )
+
+    assert outcome.findings == ()
+    assert outcome.result.failure_code == "historical_dependency_unresolved"
+    assert "historical_dependency_unresolved" in (outcome.result.failure_detail or "")
+
+
+def test_stage4_adapter_never_repairs_canon_for_a_future_design_question(
+    tmp_path: Path,
+) -> None:
+    """Q01: a chapter-set question designs future content, not missing canon."""
+
+    outcome = _run_stage4_gap_adapter(
+        tmp_path,
+        question_purpose="design_future",
+        dependency_expectation="no_historical_precondition",
+    )
+
+    assert outcome.findings == ()
+    assert outcome.result.failure_code == "historical_dependency_unresolved"
+
+
+def test_stage4_adapter_splits_a_mixed_facet_problem_by_owner(tmp_path: Path) -> None:
+    """Q11: only the confirmed relation facet reaches the Graph Curator."""
+
+    outcome = _run_stage4_gap_adapter(
+        tmp_path,
+        extra_facet_kind=NeedFacetKind.CAUSAL_HISTORY,
+    )
+    by_owner = {finding.repair_owner: finding for finding in outcome.findings}
+    relation_finding = by_owner[MemoryRepairOwner.GRAPH_CURATOR]
+    assert set(by_owner) == {MemoryRepairOwner.GRAPH_CURATOR, MemoryRepairOwner.ORDINARY_CURATOR}
+    # Each child owns exactly the facets its profile can represent.
+    assert by_owner[MemoryRepairOwner.GRAPH_CURATOR].owned_facet_ids == (
+        relation_finding.owned_facet_ids[0],
+    )
+    assert by_owner[MemoryRepairOwner.ORDINARY_CURATOR].owned_facet_ids == (
+        StableId("facet.stage4-gap.causal"),
+    )
+    # Both children describe one problem: they share the durable problem key.
+    assert (
+        by_owner[MemoryRepairOwner.GRAPH_CURATOR].no_progress_key
+        == by_owner[MemoryRepairOwner.ORDINARY_CURATOR].no_progress_key
+    )
+    assert (
+        by_owner[MemoryRepairOwner.GRAPH_CURATOR].finding_id
+        != by_owner[MemoryRepairOwner.ORDINARY_CURATOR].finding_id
+    )
+
+
+@dataclass(frozen=True, slots=True)
+class _GapAdapterOutcome:
+    """One Stage 4 gap-adapter run: the terminal plus any emitted findings."""
+
+    result: PlanningLoopResult
+    findings: tuple[MemoryRepairFinding, ...]
+    artifacts: ArtifactRepository
+
+
+def _run_stage4_gap_adapter(
+    tmp_path: Path,
+    *,
+    question_purpose: str | None = None,
+    dependency_expectation: str | None = None,
+    with_unit_evidence: bool = True,
+    extra_facet_kind: NeedFacetKind | None = None,
+) -> _GapAdapterOutcome:
     artifacts = ArtifactRepository(FilesystemObjectStore(tmp_path / "stage4-gap"))
     author_ref = artifacts.put(b"author intent", "text/plain", SchemaVersion("1.0.0"))
     checkpoint = PlanningLoopCheckpoint(
@@ -423,6 +523,25 @@ def test_stage4_adapter_binds_evidence_limited_memory_gap_finding(tmp_path: Path
         source_commit=CommitId("sha256:" + "1" * 64),
         snapshot_id=StableId("snapshot.stage4-gap"),
         text="fixture relation candidate",
+        # A Canon extraction handoff requires real cutoff-safe source evidence
+        # for the requested proposition, not merely a retrieved candidate.
+        narrative_start=4,
+        evidence_refs=(evidence,) if with_unit_evidence else (),
+    )
+    extra_facet_id = StableId("facet.stage4-gap.causal")
+    extra_receipts = (
+        (
+            FacetEvidenceReceipt(
+                need_id=need_id,
+                need_facet_id=extra_facet_id,
+                facet_kind=extra_facet_kind,
+                mandatory=True,
+                status=FacetClosureStatus.UNSUPPORTED,
+                stop_reason="no causal source",
+            ),
+        )
+        if extra_facet_kind is not None
+        else ()
     )
     trace = RetrievalTrace(
         need_id=need_id,
@@ -449,7 +568,9 @@ def test_stage4_adapter_binds_evidence_limited_memory_gap_finding(tmp_path: Path
         fusion_applied=False,
         stop_reason=RetrievalStopReason.CANDIDATES_EXHAUSTED,
         need_execution_status=NeedExecutionStatus.EXECUTED_WITH_CANDIDATES,
-        required_need_facet_ids=(facet_id,),
+        required_need_facet_ids=(
+            (facet_id, extra_facet_id) if extra_facet_kind is not None else (facet_id,)
+        ),
         facet_receipts=(
             FacetEvidenceReceipt(
                 need_id=need_id,
@@ -459,7 +580,10 @@ def test_stage4_adapter_binds_evidence_limited_memory_gap_finding(tmp_path: Path
                 status=FacetClosureStatus.UNSUPPORTED,
                 stop_reason="source did not state the relation",
             ),
+            *extra_receipts,
         ),
+        question_purpose=question_purpose,
+        dependency_expectation=dependency_expectation,
         compiled_query_bundle={
             "semantic_query": "陈长生、国教学院 的当前关系状态是什么? 具体问题: 陈长生当前经脉状态",
             "lexical_queries": ["第4章结束时陈长生经脉状态"],
@@ -542,28 +666,12 @@ def test_stage4_adapter_binds_evidence_limited_memory_gap_finding(tmp_path: Path
     )
 
     result = asyncio.run(adapter.run(simple))
-
-    finding_refs = tuple(
-        ref
+    findings = tuple(
+        MemoryRepairFinding.model_validate_json(artifacts.read_verified(ref), strict=True)
         for ref in result.artifact_refs
         if ref.media_type == "application/vnd.novel-agent.memory-repair-finding+json"
     )
-    assert len(finding_refs) == 1
-    finding = MemoryRepairFinding.model_validate_json(
-        artifacts.read_verified(finding_refs[0]), strict=True
-    )
-    assert finding.planner_attempt_id == simple.attempt_id
-    assert finding.cutoff.chapter_index == simple.chapter_index
-    assert finding.source_artifact_refs == (author_ref,)
-    assert finding.repair_owner is MemoryRepairOwner.GRAPH_CURATOR
-    assert finding.need_query == "陈长生当前经脉状态"
-    assert finding.semantic_question == "预注册: 陈长生当前经脉状态"
-    visibility = SourceVisibilityReceipt.model_validate_json(
-        artifacts.read_verified(finding.source_visibility_receipt_refs[0]), strict=True
-    )
-    assert visibility.source_artifact == author_ref
-    assert visibility.boundary_id == finding.information_boundary.boundary_id
-    assert visibility.visible_through == finding.cutoff
+    return _GapAdapterOutcome(result=result, findings=findings, artifacts=artifacts)
 
 
 def test_stage4_memory_gap_owner_routes_event_and_state_to_ordinary_curator() -> None:

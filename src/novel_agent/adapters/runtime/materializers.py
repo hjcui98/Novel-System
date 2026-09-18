@@ -6,6 +6,8 @@ from collections.abc import Iterable, Mapping
 from contextlib import suppress
 from typing import TypeVar, cast
 
+from pydantic import JsonValue
+
 from novel_agent.domain.artifacts import (
     ArtifactRef,
     PlanRootRef,
@@ -56,6 +58,18 @@ from novel_agent.domain.obligation_contract import (
 from novel_agent.domain.plan_composition import (
     PlanCompositionProof,
     verify_composition,
+)
+from novel_agent.domain.plan_detail import (
+    CHAPTER_CONTRACT_VERSION,
+    CHAPTER_SET_CONTRACT_VERSION,
+    ChapterPayloadV2,
+    ChapterSetPayloadV2,
+    ParentPlanBinding,
+    payload_contract_version,
+    plan_node_content_id,
+    require_exact_chapter_coverage,
+    require_known_facet_references,
+    validate_chapter_set_window,
 )
 from novel_agent.domain.planning import (
     PlanningLoopEventReceipt,
@@ -231,6 +245,8 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             current_chapter=current_chapter,
         )
         self._assert_single_plan_level(proposal.items, trusted_level, mode=proposal.mode)
+        v2_set = self._v2_chapter_set_items(proposal.items)
+        v2_chapter = self._v2_chapter_item(proposal.items, trusted_level=trusted_level)
         story_parent = next(
             (node.plan_node_id for node in current.nodes if node.plan_level is PlanLevel.STORY),
             None,
@@ -276,18 +292,58 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                 raise CandidateMaterializationError(
                     "CHAPTER_SET candidate must contain one chapter item for every horizon chapter"
                 )
-            wrapper = self._chapter_set_wrapper(
-                proposal.items,
-                parent_id=volume_parent,
-                horizon_start=candidate.horizon_start,
-                horizon_end=candidate.horizon_end,
-            )
+            if v2_set is None:
+                wrapper = self._chapter_set_wrapper(
+                    proposal.items,
+                    parent_id=volume_parent,
+                    horizon_start=candidate.horizon_start,
+                    horizon_end=candidate.horizon_end,
+                )
+                set_nodes = (wrapper,)
+                child_items = proposal.items
+            else:
+                # V2: the semantic parent item is the chapter set.  The host
+                # builds its node and binds the children to the parent's real
+                # content hash afterwards, so the parent never embeds a child
+                # hash and no parent/child cycle can form.
+                set_payload, child_items = v2_set
+                validate_chapter_set_window(
+                    set_payload,
+                    horizon_start=candidate.horizon_start,
+                    horizon_end=candidate.horizon_end,
+                )
+                try:
+                    require_known_facet_references(
+                        set_payload,
+                        trusted_obligation_ids=self._trusted_obligation_ids(current),
+                    )
+                except ValueError as error:
+                    # Name the concrete defect: this is an authoring error in
+                    # the proposal, not an internal mapping failure.
+                    raise CandidateMaterializationError(str(error)) from error
+                wrapper = self._node(
+                    self._semantic_set_item(proposal.items, set_payload),
+                    plan_level=PlanLevel.CHAPTER_SET,
+                    default_parent_id=volume_parent,
+                    required_parent_id=volume_parent,
+                    valid_parent_ids={node.plan_node_id.root for node in current.nodes},
+                    candidate_start=candidate.horizon_start,
+                    candidate_end=candidate.horizon_end,
+                )
+                if (
+                    wrapper.chapter_start != candidate.horizon_start
+                    or wrapper.chapter_end != candidate.horizon_end
+                ):
+                    raise CandidateMaterializationError(
+                        "a V2 chapter set must cover exactly its rolling horizon"
+                    )
+                set_nodes = (wrapper,)
             valid_parent_ids = {node.plan_node_id.root for node in current.nodes} | {
                 wrapper.plan_node_id.root,
-                *(item.item_id.root for item in proposal.items),
+                *(item.item_id.root for item in child_items),
             }
             incoming_nodes = (
-                wrapper,
+                *set_nodes,
                 *tuple(
                     self._node(
                         item,
@@ -298,9 +354,61 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                         candidate_start=candidate.horizon_start,
                         candidate_end=candidate.horizon_end,
                     )
-                    for item in proposal.items
+                    for item in child_items
                 ),
             )
+        elif v2_chapter is not None:
+            # A V2 CHAPTER proposal refines one existing chapter target in
+            # place.  It keeps the original goal identity and chapter-set
+            # parent instead of minting a second competing chapter node.
+            chapter_payload = v2_chapter
+            existing = next(
+                (
+                    node
+                    for node in current.nodes
+                    if node.plan_level is PlanLevel.CHAPTER
+                    and node.chapter_start == chapter_payload.chapter_index
+                    and node.chapter_end == chapter_payload.chapter_index
+                ),
+                None,
+            )
+            if existing is None:
+                raise CandidateMaterializationError(
+                    "a V2 chapter must refine an existing chapter node, not create one"
+                )
+            if existing.parent_id is None or existing.parent_id.root != (
+                self._existing_chapter_set_parent(current, chapter_payload.chapter_index)
+            ):
+                raise CandidateMaterializationError(
+                    "a V2 chapter must keep its accepted chapter-set parent"
+                )
+            parent = next(
+                (node for node in current.nodes if node.plan_node_id == existing.parent_id),
+                None,
+            )
+            if parent is None:
+                raise CandidateMaterializationError("V2 chapter parent does not exist")
+            valid_parent_ids = {node.plan_node_id.root for node in current.nodes} | {
+                item.item_id.root for item in proposal.items
+            }
+            incoming_nodes = (
+                self._node(
+                    proposal.items[0],
+                    plan_level=PlanLevel.CHAPTER,
+                    default_parent_id=parent.plan_node_id,
+                    required_parent_id=parent.plan_node_id,
+                    valid_parent_ids=valid_parent_ids,
+                    candidate_start=chapter_payload.chapter_index,
+                    candidate_end=chapter_payload.chapter_index,
+                ),
+            )
+            invalidated.add(existing.plan_node_id)
+            goal = next(
+                (item for item in current.chapter_goals if item.goal_id == existing.plan_node_id),
+                None,
+            )
+            if goal is not None:
+                invalidated.add(goal.goal_id)
         else:
             valid_parent_ids = {node.plan_node_id.root for node in current.nodes} | {
                 item.item_id.root for item in proposal.items
@@ -346,6 +454,10 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             )
             for node in incoming_nodes
         )
+        # Bind children to their parent's *final* content hash, after the host
+        # has attached every obligation.  The parent only ever names child
+        # stable ids, so this binding cannot form a parent/child hash cycle.
+        incoming_nodes = self._bind_parent_content(incoming_nodes, current)
         incoming_goals = tuple(
             cast(
                 ChapterGoal,
@@ -615,6 +727,12 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         return None
 
     @staticmethod
+    def _item_contract_version(item: ProposedItem) -> str | None:
+        """Return one proposal item's declared payload contract version."""
+
+        return payload_contract_version(item.payload)
+
+    @staticmethod
     def _chapter_number(payload: Mapping[str, object]) -> int | None:
         if "chapter_index" in payload:
             raw = payload["chapter_index"]
@@ -637,9 +755,15 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         valid_parent_ids: set[str] | None = None,
         candidate_start: int | None = None,
         candidate_end: int | None = None,
+        payload_overrides: Mapping[str, JsonValue] | None = None,
     ) -> PlanNode:
+        payload: dict[str, JsonValue] = dict(item.payload)
+        if payload_overrides:
+            # Host-owned bindings win over anything the model placed in the
+            # payload; a model cannot name its own parent content hash.
+            payload.update(dict(payload_overrides))
         summary = cls._payload_text(
-            item.payload,
+            payload,
             "summary",
             "goal",
             "primary_conflict",
@@ -649,16 +773,13 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             "content",
             "overview",
         )
-        if summary is None and "summary" not in item.payload and "goal" not in item.payload:
-            for val in item.payload.values():
+        if summary is None and "summary" not in payload and "goal" not in payload:
+            for val in payload.values():
                 if isinstance(val, str) and val.strip():
                     summary = val.strip()
                     break
-        if "title" in item.payload:
-            title = item.payload.get("title")
-        else:
-            title = summary or item.item_id.root
-        parent = item.payload.get("parent_id") or item.payload.get("parent_plan_node_id")
+        title = payload.get("title") if "title" in payload else summary or item.item_id.root
+        parent = payload.get("parent_id") or payload.get("parent_plan_node_id")
         if not isinstance(summary, str) or not summary.strip():
             raise CandidateMaterializationError("Plan item requires a non-empty summary")
         if not isinstance(title, str) or not title.strip():
@@ -671,12 +792,12 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                     "CHAPTER items in a CHAPTER_SET must use the current CHAPTER_SET wrapper"
                 )
             parent = required_parent_id.root
-        raw_start = item.payload.get("chapter_start")
-        raw_end = item.payload.get("chapter_end")
+        raw_start = payload.get("chapter_start")
+        raw_end = payload.get("chapter_end")
         if raw_start is None or raw_end is None:
             for range_key in ("chapter_range", "chapter_window", "target_window", "range"):
-                if range_key in item.payload:
-                    range_val = item.payload.get(range_key)
+                if range_key in payload:
+                    range_val = payload.get(range_key)
                     if isinstance(range_val, dict):
                         if raw_start is None:
                             raw_start = range_val.get("start") or range_val.get("chapter_start")
@@ -695,8 +816,8 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
                         break
         if raw_start is None or raw_end is None:
             for vol_key in ("volume_number", "volume_index", "volume_no", "volume"):
-                if vol_key in item.payload:
-                    vol_num = item.payload.get(vol_key)
+                if vol_key in payload:
+                    vol_num = payload.get(vol_key)
                     if isinstance(vol_num, int) and not isinstance(vol_num, bool):
                         if raw_start is None:
                             raw_start = (vol_num - 1) * 100 + 1
@@ -716,12 +837,12 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             raw_end = candidate_end
         if (
             raw_start is None
-            and isinstance(item.payload.get("chapter_index"), int)
-            and not isinstance(item.payload.get("chapter_index"), bool)
+            and isinstance(payload.get("chapter_index"), int)
+            and not isinstance(payload.get("chapter_index"), bool)
             and plan_level is PlanLevel.CHAPTER
         ):
-            raw_start = item.payload["chapter_index"]
-            raw_end = item.payload["chapter_index"]
+            raw_start = payload["chapter_index"]
+            raw_end = payload["chapter_index"]
         chapter_start = (
             raw_start if isinstance(raw_start, int) and not isinstance(raw_start, bool) else None
         )
@@ -729,7 +850,7 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             raw_end if isinstance(raw_end, int) and not isinstance(raw_end, bool) else None
         )
         if parent is None:
-            deps = item.payload.get("dependencies")
+            deps = payload.get("dependencies")
             if (
                 isinstance(deps, (list, tuple))
                 and deps
@@ -764,13 +885,176 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
             title=title,
             summary=summary,
             parent_id=None if parent is None else StableId(parent),
-            obligation_ids=cls._ids(item.payload.get("obligation_ids"), "obligation_ids"),
+            obligation_ids=cls._ids(payload.get("obligation_ids"), "obligation_ids"),
             source_ids=item.source_ids,
-            payload=dict(item.payload),
+            payload=payload,
             plan_level=item_level,
             chapter_start=chapter_start,
             chapter_end=chapter_end,
         )
+
+    @staticmethod
+    def _trusted_obligation_ids(current: PlanRootDocument) -> tuple[StableId, ...]:
+        """Return every obligation id an accepted plan node already declared."""
+
+        return tuple(
+            dict.fromkeys(
+                obligation_id for node in current.nodes for obligation_id in node.obligation_ids
+            )
+        )
+
+    @classmethod
+    def _bind_parent_content(
+        cls,
+        incoming: tuple[PlanNode, ...],
+        current: PlanRootDocument,
+    ) -> tuple[PlanNode, ...]:
+        """Write the host parent-content binding on every new child node.
+
+        A child bound to a parent that is being replaced in the same batch must
+        bind the *new* parent, which is why the lookup prefers the incoming
+        nodes over the current root.
+        """
+
+        by_id = {node.plan_node_id: node for node in current.nodes}
+        by_id.update({node.plan_node_id: node for node in incoming})
+        bound: list[PlanNode] = []
+        for node in incoming:
+            if node.parent_id is None:
+                bound.append(node)
+                continue
+            parent = by_id.get(node.parent_id)
+            if parent is None:
+                bound.append(node)
+                continue
+            if node.plan_level is not PlanLevel.CHAPTER:
+                bound.append(node)
+                continue
+            payload = dict(node.payload)
+            payload["parent_set_binding"] = cls._parent_content_binding(parent)
+            bound.append(node.model_copy(update={"payload": payload}))
+        return tuple(bound)
+
+    @staticmethod
+    def _parent_content_binding(parent: PlanNode) -> dict[str, JsonValue]:
+        """Return the host binding from a child to its parent's content hash."""
+
+        return ParentPlanBinding(
+            parent_node_id=parent.plan_node_id,
+            parent_content_hash=plan_node_content_id(parent),
+            parent_plan_level=(parent.plan_level or PlanLevel.CHAPTER_SET).value,
+        ).model_dump(mode="json")
+
+    @staticmethod
+    def _existing_chapter_set_parent(current: PlanRootDocument, chapter_index: int) -> str | None:
+        """Return the accepted chapter-set id that owns one chapter, if any."""
+
+        return next(
+            (
+                node.parent_id.root
+                for node in current.nodes
+                if node.plan_level is PlanLevel.CHAPTER
+                and node.chapter_start == chapter_index
+                and node.chapter_end == chapter_index
+                and node.parent_id is not None
+            ),
+            None,
+        )
+
+    @classmethod
+    def _semantic_set_item(
+        cls,
+        items: tuple[ProposedItem, ...],
+        payload: ChapterSetPayloadV2,
+    ) -> ProposedItem:
+        """Return the one proposal item that carries the chapter-set semantics."""
+
+        for item in items:
+            if cls._item_contract_version(item) == CHAPTER_SET_CONTRACT_VERSION:
+                return item
+        raise CandidateMaterializationError("a V2 chapter set requires its semantic parent item")
+
+    @classmethod
+    def _v2_chapter_set_items(
+        cls, items: tuple[ProposedItem, ...]
+    ) -> tuple[ChapterSetPayloadV2, tuple[ProposedItem, ...]] | None:
+        """Split a 1+N V2 chapter-set proposal, or return None for V1.
+
+        A payload that declares ``chapter-set.v2`` is never silently read as
+        V1: a missing or malformed semantic parent is a rejection, not a
+        fallback to the structural wrapper.
+        """
+
+        declared = tuple(
+            item
+            for item in items
+            if cls._item_contract_version(item) == CHAPTER_SET_CONTRACT_VERSION
+        )
+        if not declared:
+            return None
+        if len(declared) != 1:
+            raise CandidateMaterializationError(
+                "a V2 chapter-set proposal requires exactly one semantic parent item"
+            )
+        semantic = declared[0]
+        children = tuple(item for item in items if item is not semantic)
+        if not children:
+            raise CandidateMaterializationError(
+                "a V2 chapter-set proposal requires its chapter items"
+            )
+        for child in children:
+            version = cls._item_contract_version(child)
+            if version != CHAPTER_CONTRACT_VERSION:
+                raise CandidateMaterializationError(
+                    "every chapter of a V2 chapter set must declare chapter.v2"
+                )
+        payload = ChapterSetPayloadV2.model_validate(semantic.payload)
+        child_indexes = tuple(
+            sorted(
+                index
+                for child in children
+                if (index := cls._chapter_number(child.payload)) is not None
+            )
+        )
+        if len(child_indexes) != len(children):
+            raise CandidateMaterializationError(
+                "every V2 chapter item must declare its chapter_index"
+            )
+        require_exact_chapter_coverage(
+            start=payload.chapter_start,
+            end=payload.chapter_end,
+            actual=child_indexes,
+        )
+        declared_ids = tuple(item.chapter_node_id for item in payload.chapter_assignments)
+        actual_ids = {child.item_id for child in children}
+        unknown = tuple(item.root for item in declared_ids if item not in actual_ids)
+        if unknown:
+            raise CandidateMaterializationError(
+                "chapter assignments must reference the proposal's chapter items: "
+                + ", ".join(unknown)
+            )
+        return payload, children
+
+    @classmethod
+    def _v2_chapter_item(
+        cls, items: tuple[ProposedItem, ...], *, trusted_level: PlanLevel | None
+    ) -> ChapterPayloadV2 | None:
+        """Return the single V2 chapter payload of a CHAPTER proposal, if any."""
+
+        if trusted_level is not PlanLevel.CHAPTER:
+            # A CHAPTER_SET proposal legitimately carries one chapter.v2
+            # outline per chapter; only a CHAPTER proposal refines a chapter.
+            return None
+        declared = tuple(
+            item for item in items if cls._item_contract_version(item) == CHAPTER_CONTRACT_VERSION
+        )
+        if not declared:
+            return None
+        if len(items) != 1 or len(declared) != 1:
+            raise CandidateMaterializationError(
+                "a V2 chapter proposal must declare exactly one chapter item"
+            )
+        return ChapterPayloadV2.model_validate(declared[0].payload)
 
     @classmethod
     def _chapter_set_wrapper(
@@ -901,10 +1185,40 @@ class PlanCandidateMaterializer(_TrustedMaterializer):
         if trusted_level is None:
             return
         if trusted_level is PlanLevel.CHAPTER_SET:
+            declared_levels = tuple(
+                (item, level)
+                for item in items
+                if (level := cls._declared_plan_level(item)) is not None
+            )
+            v2_parents = tuple(
+                item
+                for item, _level in declared_levels
+                if cls._item_contract_version(item) == CHAPTER_SET_CONTRACT_VERSION
+            )
+            if v2_parents:
+                # The only composite shape this level accepts is the restricted
+                # 1+N proposal: exactly one semantic chapter-set parent plus
+                # chapter items.  A payload that claims V2 never falls back to
+                # the structural wrapper, and it cannot smuggle in a second
+                # parent, a STORY or an ARC_VOLUME item.
+                if len(v2_parents) != 1:
+                    raise CandidateMaterializationError(
+                        "a V2 chapter-set proposal requires exactly one semantic parent item"
+                    )
+                foreign = tuple(
+                    item.item_id.root
+                    for item, level in declared_levels
+                    if level not in {PlanLevel.CHAPTER_SET, PlanLevel.CHAPTER}
+                )
+                if foreign:
+                    raise CandidateMaterializationError(
+                        "a V2 chapter-set proposal may only contain its chapter items"
+                    )
+                return
             mixed = tuple(
                 item.item_id.root
-                for item in items
-                if (declared := cls._declared_plan_level(item)) not in {None, PlanLevel.CHAPTER}
+                for item, level in declared_levels
+                if level not in {None, PlanLevel.CHAPTER}
             )
             if mixed:
                 raise CandidateMaterializationError(

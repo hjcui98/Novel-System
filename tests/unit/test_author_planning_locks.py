@@ -524,16 +524,22 @@ def test_volume_stage_grid_binds_free_text_slots_to_their_own_stage() -> None:
     assert any("出口未到期" in item for item in opening)
 
     assert (
-        "当前卷阶段[卷中·入口已成立:entry_conditions]：必须已取得铜铭（本卷入口条件已经成立，本章不得与之矛盾）"  # noqa: RUF001
-        in middle
+        "当前卷阶段[卷中·入口待核实:entry_conditions]：必须已取得铜铭"  # noqa: RUF001
+        "（按已接纳计划本项应已建立，属于计划要求而非既成事实；"  # noqa: RUF001
+        "本章只能使用已在当前事实中核实到的部分，不得把未核实项当作已经发生）" in middle  # noqa: RUF001
     )
+    # Stage position is not evidence: a passed opening slot must never be
+    # rendered as an established fact.
+    assert not any("入口已成立" in item for item in middle)
     assert any("出口未到期" in item for item in middle)
 
     assert "当前卷阶段[卷尾:exit_conditions]：内府资格已获得" in closing  # noqa: RUF001
     assert (
-        "当前卷阶段[卷尾·入口已成立:entry_conditions]：必须已取得铜铭（本卷入口条件已经成立，本章不得与之矛盾）"  # noqa: RUF001
-        in closing
+        "当前卷阶段[卷尾·入口待核实:entry_conditions]：必须已取得铜铭"  # noqa: RUF001
+        "（按已接纳计划本项应已建立，属于计划要求而非既成事实；"  # noqa: RUF001
+        "本章只能使用已在当前事实中核实到的部分，不得把未核实项当作已经发生）" in closing  # noqa: RUF001
     )
+    assert not any("入口已成立" in item for item in closing)
     assert "当前卷阶段[整卷:capability_ceiling]：不得突破三阶开脉" in closing  # noqa: RUF001
     assert opening != middle != closing
 

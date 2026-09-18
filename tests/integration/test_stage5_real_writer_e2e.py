@@ -113,6 +113,7 @@ from novel_agent.domain.stage2 import (
     ProposedItem,
     RetrievalBudget,
 )
+from novel_agent.domain.world import PlanLevel
 from novel_agent.domain.writing_loop import WritingLoopResult
 from novel_agent.ports.creative_runtime import WritingLeafPort
 from novel_agent.prompts import PromptRegistry
@@ -795,8 +796,57 @@ def test_real_writer_adapter_composes_through_draft_chain(
     assert accepted.current_task_id is not None
     projection = asyncio.run(runtime.advance(accepted.current_task_id, worker_id="commit"))
     assert projection.current_task_id is not None
-    draft = asyncio.run(runtime.advance(projection.current_task_id, worker_id="projection"))
+    # The accepted chapter still has outline-level detail only, so the runtime
+    # creates a CHAPTER refinement before any Writer call.  This fixture's
+    # chapter is a V1 chapter node, which is a valid plan but not an accepted
+    # single-chapter execution, and its Stage 4 fixture returns the chapter
+    # again rather than execution detail — so exactly one refinement task is
+    # created and the runtime then hands the chapter to the Writer gate.
+    refinement = asyncio.run(runtime.advance(projection.current_task_id, worker_id="projection"))
+    assert refinement.terminal is CreativeRunTerminal.PROGRESSED
+    assert refinement.current_task_id is not None
+    refinement_task = commands.get_task(refinement.current_task_id)
+    assert refinement_task.plan_level is PlanLevel.CHAPTER
+    assert refinement_task.horizon_start == 21
+    assert refinement_task.horizon_end == 21
+    refinement_waiting = asyncio.run(
+        runtime.advance(refinement_task.task_id, worker_id="planner.refinement")
+    )
+    assert refinement_waiting.terminal is CreativeRunTerminal.WAITING_PLAN_ACCEPTANCE
+    assert refinement_waiting.current_task_id is not None
+    settled_refinement = commands.get_task(refinement_waiting.current_task_id)
+    assert settled_refinement.candidate_binding_ref is not None
+    refinement_candidate = CandidateBinding.model_validate_json(
+        artifacts.read_verified(settled_refinement.candidate_binding_ref)
+    )
+    refinement_accepted = runtime.submit_acceptance(
+        AcceptanceCommand(
+            command_id=StableId("accept.real-writer.chapter"),
+            project_id=settled_refinement.project_id,
+            run_id=settled_refinement.run_id,
+            task_id=settled_refinement.task_id,
+            candidate=refinement_candidate,
+            acceptance_policy_hash=HASH,
+            actor_kind=ActorKind.AUTHOR,
+            actor_id="author",
+            decision=AcceptanceDecision.ACCEPT,
+            reason="approved the chapter refinement",
+            expected_project_commit=settled_refinement.basis_commit,
+            idempotency_identity=StableId("accept.real-writer.chapter.identity"),
+            issued_at=NOW,
+        ),
+        policy=policy,
+    )
+    assert refinement_accepted.current_task_id is not None
+    refinement_projection = asyncio.run(
+        runtime.advance(refinement_accepted.current_task_id, worker_id="commit")
+    )
+    assert refinement_projection.current_task_id is not None
+    draft = asyncio.run(
+        runtime.advance(refinement_projection.current_task_id, worker_id="projection")
+    )
     assert draft.current_task_id is not None
+    assert commands.get_task(draft.current_task_id).kind is TaskKind.DRAFT_CANDIDATE
     # The real Stage3WriterLeafAdapter drives the draft candidate through the real loop.
     waiting_draft = asyncio.run(runtime.advance(draft.current_task_id, worker_id="writer.real"))
     failed_task = commands.get_task(draft.current_task_id)

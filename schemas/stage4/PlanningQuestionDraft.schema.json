@@ -1,0 +1,93 @@
+{
+  "$defs": {
+    "PlanningQuestionKind": {
+      "enum": [
+        "fact",
+        "relation_causal",
+        "obligation_pacing",
+        "style_reference",
+        "human_choice"
+      ],
+      "title": "PlanningQuestionKind",
+      "type": "string"
+    },
+    "StableId": {
+      "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
+      "title": "StableId",
+      "type": "string"
+    }
+  },
+  "description": "The provider-facing portion of a Planner question.\n\n``PlanningQuestion`` also carries host-owned semantics: which purpose the\nquestion serves, what the reviewed plan expects its answer to be, and which\nplan item the question originated from.  Those values decide whether a\nnon-answer becomes a Canon repair or a plan precondition conflict, so a\nmodel response must not be able to set them.  Keeping this schema free of\nthose fields removes the ability rather than validating it after the fact.",
+  "properties": {
+    "blocking": {
+      "default": false,
+      "title": "Blocking",
+      "type": "boolean"
+    },
+    "entity_labels": {
+      "default": [],
+      "items": {
+        "type": "string"
+      },
+      "title": "Entity Labels",
+      "type": "array"
+    },
+    "goal_id": {
+      "$ref": "#/$defs/StableId"
+    },
+    "kind": {
+      "$ref": "#/$defs/PlanningQuestionKind"
+    },
+    "question": {
+      "minLength": 1,
+      "title": "Question",
+      "type": "string"
+    },
+    "relation_object": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Relation Object"
+    },
+    "relation_predicate": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Relation Predicate"
+    },
+    "relation_subject": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Relation Subject"
+    }
+  },
+  "required": [
+    "kind",
+    "question",
+    "goal_id"
+  ],
+  "title": "PlanningQuestionDraft",
+  "type": "object"
+}

@@ -4510,3 +4510,98 @@ PASS. Plugin success does not lift the worker-restart or sandbox notes.
   直接调用同一 leaf 可正常推进（inquiry/review 成功，按 8k token slice 正常 YIELD），
   证明是我的代码路径正常、失败源于端点争用。
 - 后台进程保持运行：`logs/dispatch.pid`、`logs/auto-accept.pid`、`logs/retry-pump.pid`。
+
+## 37. 分层规划与规划—记忆边界修复（2026-09-18，基线 `dda6938`）
+
+按 `docs/Novel_System_Hierarchical_Planning_Remediation_20260918.md` 的 A—E 批次实施；
+决策记录见 `docs/adr/0011-hierarchical-plan-boundaries.md`。批次 F（真实 G3）未运行。
+
+### 代码改动
+
+- **新增叶子模块**
+  - `domain/plan_detail.py`：`ChapterSetPayloadV2` / `ChapterPayloadV2` / `SceneBlueprint` /
+    `ExecutionBeatBlueprint` / `ParentPlanBinding` / `PlanParticipant` / `PlannedIntroduction`，
+    以及 `require_exact_chapter_coverage()`、`validate_chapter_set_window()`、
+    `validate_execution_allocation()`、`require_known_facet_references()`、
+    `plan_node_content_id()`。纯校验，无 IO、无模型调用、无第二存储。
+  - `domain/planning_gap.py`：`QuestionPurpose` / `DependencyExpectation` / `GapDisposition`、
+    `VerifiedGapEvidence`、`classify_gap()`、`resolve_question_semantics()`、
+    `disposition_diagnostic()`、`HISTORICAL_DEPENDENCY_UNRESOLVED` /
+    `UNSUPPORTED_PLAN_PRECONDITION`。
+  - `domain/creation_step.py`：`select_next_creation_step()`、`TrustedPlanReadiness`、
+    `derive_plan_readiness()`、`covering_volume()`、`covering_chapter_set()`、
+    `chapter_execution_usable()`、`parent_binding_is_current()`。
+- **批次 A（边界与证据）**
+  - `domain/planning.py`：`PlanningQuestion` 新增宿主字段；新增模型面向的
+    `PlanningQuestionDraft`（结构上不含宿主字段）；新增 4 个 `ReviewIssueKind`。
+  - `agents/planner.py`：`promote_question_draft()`、`question_boundary_semantics()`、
+    `validate_history_retrieval_contract()`；历史 Need 现在同时受 `target_chapter - 1`
+    与**已提交正文 cutoff** 约束。
+  - `services/planning_context_loop.py`：从冻结 TextRoot 计算 cutoff 并传给 Planner；
+    Memory 问题与 reviewer gap 问题在创建点即绑定宿主语义。
+  - `services/planning_inquiry_need_generation.py`：`design_future` 不生成历史 Need，
+    以 `future_design_is_a_plan_action_not_a_historical_fact` 保留可审查的拒绝理由。
+  - `adapters/runtime/stage4_planner.py`：`_memory_gap_admission()` + `_classify_memory_gap()`
+    + `_verified_gap_evidence()`；只有通过 source-proof 准入的缺口才产出 finding；
+    混合 facet 按 owner 拆分；`_attempt_problem_identity()` 与
+    `_stable_problem_identity()` 分离。
+  - `services/runtime_commands.py`：维护任务身份以稳定问题键为主键。
+  - `domain/memory.py` / `domain/memory_write.py`：Need 与 Trace 携带两个语义维度；
+    `attempt_problem_key` / `owned_facet_ids` 为可选新增字段。
+- **批次 B（V2 契约与落库）**
+  - `adapters/runtime/materializers.py`：`_assert_single_plan_level()` 版本分派；
+    `_v2_chapter_set_items()` / `_v2_chapter_item()`；语义父项直接构造章集节点；
+    `_bind_parent_content()` 在义务附加之后写入父内容绑定；CHAPTER 深化精确替换原章目标。
+- **批次 C（调度）**
+  - `services/creative_runtime.py`：`_creation_step_successor()`；`_horizon_is_exhausted()`；
+    `_rolling_plan_task()` 不再继承上一层级，窗口结尾由当前 PlanRoot 计算。
+  - `adapters/runtime/stage4_planner.py`：V2 REPLAN 按受信层级选择 Planner 模式。
+- **批次 D（Writer 保真）**
+  - `adapters/runtime/stage3_writer.py`：`_compile_chapter_execution()`；
+    `_volume_stage_constraints()` 删除“阶段已过去 → 入口已成立”的推断。
+  - `domain/generation.py`：`WritingTaskContract` 新增 `scene_blueprints` /
+    `planned_participants` / `planned_introductions` 与 `required_execution_beat_ids()`。
+  - `services/writer_cognition.py`：`validate_work_plan_execution()`。
+  - prompts：`planner_chapter_set_v1.md`（1+N）、`stage4_planner_chapter_v1.md`（execution 深化）、
+    `writer_work_plan_v1.md` / `writer_draft_v1.md`（细纲不可丢失）；
+    `planner.py` 动态 `CHAPTER_SET_V2_CONSTRAINTS` / `CHAPTER_V2_CONSTRAINTS`。
+- **批次 E（正文完整性）**
+  - `services/writer_cognition.py`：`TextIntegrityKind` / `TextIntegrityVerdict` /
+    `text_integrity_verdict()` / `tail_repeats_recent_prose()`，接入共享
+    `draft_surface_error()` 与 `candidate_surface_error()`。
+
+### 测试与证据
+
+- 新增确定性测试：
+  `tests/unit/test_planning_question_semantics.py`（15）、
+  `tests/unit/test_creation_step_selection.py`（14）、
+  `tests/unit/test_writer_execution_binding.py`（13）、
+  `tests/contract/test_chapter_set_v2_materialization.py`（14）、
+  `tests/regression/test_chapter_tail_integrity.py`（16）。
+- 更新既有测试以匹配新契约：`test_stage4_planning_loop_and_evaluation.py`（provider 问题 schema）、
+  `test_stage2_planner_agent.py`（V2 章集 prompt 契约 + cutoff 用例）、
+  `test_stage5_leaf_adapters.py`（缺口准入需要真实 cutoff-safe 证据；新增 3 个缺口路由用例）、
+  `test_author_planning_locks.py`（入口 slot 不再渲染成既成事实）、
+  `test_u8b_runtime_commands.py`（维护身份跨 attempt 稳定）、
+  `test_stage5_real_writer_e2e.py`（章集接纳后先深化再写作）。
+- Schema 已用仓库既有 exporter 同步（`schemas/stage1..stage4`，含新增
+  `PlanningQuestionDraft.schema.json`）。
+- 本地命令（worktree `.conda-env`）：
+  `NOVEL_AGENT_FORBID_MODEL_CALLS=true .conda-env/bin/pytest -m "not model_required and not integration" -q --no-cov`
+  → **65 failed, 3538 passed, 1 skipped**。
+- 同条件下对基线 `dda6938` 的独立 worktree（`tmp/ns-baseline-check`）运行同一命令
+  → **77 failed**。两者差集：**我的改动没有引入任何新的失败项**，并修好了 12 项
+  （5 项 schema 漂移、2 项维护身份、1 项卷阶段渲染、3 项问句/缺口契约、1 项真实 Writer 链）。
+- 剩余 65 项为环境性既有失败：49 项 `FileNotFoundError` + 47 项
+  `HumanBenchmarkCompileError` 指向未随 worktree 检出的 `benchmarks/private` 私有基准数据与实际
+  小说运行目录，其余为依赖真实冻结 artifact / 基础设施的断言。
+
+### 未运行 / 未验证（不得记为通过）
+
+- **批次 F 真实 G3 未运行**：需要真实模型端点、隔离对象存储、Canon 基线与接纳权限，
+  本次会话不具备相应授权与基础设施，未发起任何模型调用。
+- **`make quality` 未通过**：仓库门禁包含 `--cov-fail-under=100`；当前模块集合下基线本身
+  就不达标（同样的 65/77 项确定性失败先于本次改动存在），因此只能报告
+  “改动未引入新失败”，不能报告质量门通过。
+- **历史第 2 章未修订**：`11.3` 要求的受信正文修订路径未在本次会话执行，
+  也未用 SQL 或对象文件直接覆盖 Canon。

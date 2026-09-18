@@ -608,6 +608,18 @@ class Stage1MemoryNeed(DomainModel):
     planner_artifact_ref: ArtifactId | None = None
     planned_draft_id: str | None = Field(default=None, min_length=1)
     validated_need_set_hash: ArtifactId | None = None
+    # Host-derived boundary semantics of the reviewed Planner question.  A
+    # question that designs future content must never become a historical
+    # retrieval Need, so these travel with the Need into its retrieval trace
+    # instead of being recomputed from model text downstream.
+    question_purpose: str | None = Field(default=None, min_length=1)
+    dependency_expectation: str | None = Field(default=None, min_length=1)
+
+    @model_validator(mode="after")
+    def validate_boundary_semantics(self) -> Stage1MemoryNeed:
+        if self.question_purpose == "design_future":
+            raise ValueError("a question that designs future content cannot become a history Need")
+        return self
 
     @model_validator(mode="after")
     def validate_target(self) -> Stage1MemoryNeed:
@@ -895,6 +907,14 @@ class RetrievalTrace(DomainModel):
     semantic_receipt_refs: tuple[ArtifactRef, ...] = ()
     semantic_fallback_status: str | None = Field(default=None, min_length=1)
     semantic_fallback_reason: str | None = Field(default=None, min_length=1)
+    # Reviewed Planner question semantics, copied from the Need that produced
+    # this trace.  They decide whether an unresolved facet is a Canon repair or
+    # an unresolved plan dependency, so the Planner gap owner must be able to
+    # read them from the frozen memory context rather than re-deriving them.
+    # Text keeps this domain module free of a planning import; the values are
+    # the members of ``novel_agent.domain.planning_gap``.
+    question_purpose: str | None = Field(default=None, min_length=1)
+    dependency_expectation: str | None = Field(default=None, min_length=1)
 
     @model_validator(mode="before")
     @classmethod

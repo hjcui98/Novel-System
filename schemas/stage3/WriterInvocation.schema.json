@@ -349,6 +349,76 @@
       "title": "DraftArtifact",
       "type": "object"
     },
+    "ExecutionBeatBlueprint": {
+      "description": "One few-hundred-character unit of writing work.\n\nA beat is the smallest unit the Writer contract carries: it says what\nhappens, what opposes it, what the character chooses, what results, and how\nthe prose should end.  A budget without those is a length request, not a\nplan.",
+      "properties": {
+        "action": {
+          "minLength": 1,
+          "title": "Action",
+          "type": "string"
+        },
+        "beat_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "budget_characters": {
+          "minimum": 1,
+          "title": "Budget Characters",
+          "type": "integer"
+        },
+        "choice": {
+          "minLength": 1,
+          "title": "Choice",
+          "type": "string"
+        },
+        "close_point": {
+          "minLength": 1,
+          "title": "Close Point",
+          "type": "string"
+        },
+        "information_revealed": {
+          "minLength": 1,
+          "title": "Information Revealed",
+          "type": "string"
+        },
+        "outcome": {
+          "minLength": 1,
+          "title": "Outcome",
+          "type": "string"
+        },
+        "parent_beat_refs": {
+          "items": {
+            "$ref": "#/$defs/StableId"
+          },
+          "minItems": 1,
+          "title": "Parent Beat Refs",
+          "type": "array"
+        },
+        "prose_focus": {
+          "minLength": 1,
+          "title": "Prose Focus",
+          "type": "string"
+        },
+        "resistance": {
+          "minLength": 1,
+          "title": "Resistance",
+          "type": "string"
+        }
+      },
+      "required": [
+        "beat_id",
+        "parent_beat_refs",
+        "action",
+        "resistance",
+        "choice",
+        "outcome",
+        "information_revealed",
+        "prose_focus",
+        "budget_characters",
+        "close_point"
+      ],
+      "title": "ExecutionBeatBlueprint",
+      "type": "object"
+    },
     "ExecutionStatus": {
       "enum": [
         "planned",
@@ -574,6 +644,146 @@
       "title": "ModelUsage",
       "type": "object"
     },
+    "PlanParticipant": {
+      "description": "One planned or already-known participant of a chapter set.\n\nA planned participant is not a Canon entity.  It carries a plan-local\nreference so the Writer can write about something that does not exist in\nthe World yet, while the World stays free of a pre-written membership\nrelation.  A known participant references a real entity id that the\ncurrent World must be able to resolve.",
+      "properties": {
+        "enter_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Enter Chapter"
+        },
+        "entity_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "exit_chapter": {
+          "anyOf": [
+            {
+              "minimum": 1,
+              "type": "integer"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Exit Chapter"
+        },
+        "introduction_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "label": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Label"
+        },
+        "narrative_role": {
+          "minLength": 1,
+          "title": "Narrative Role",
+          "type": "string"
+        },
+        "planned_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "reference_kind": {
+          "enum": [
+            "planned",
+            "canon"
+          ],
+          "title": "Reference Kind",
+          "type": "string"
+        }
+      },
+      "required": [
+        "reference_kind",
+        "narrative_role"
+      ],
+      "title": "PlanParticipant",
+      "type": "object"
+    },
+    "PlannedIntroduction": {
+      "description": "One thing the window establishes that does not exist yet.\n\nA planned introduction is a plan responsibility, not a world fact.  It\nrecords which chapter performs the introduction and which later chapter\ndepends on it, so a reader can check the dependency is discharged in the\nright order instead of assuming it already happened.",
+      "properties": {
+        "created_by_item_ref": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
+        "depends_from_chapters": {
+          "default": [],
+          "items": {
+            "type": "integer"
+          },
+          "title": "Depends From Chapters",
+          "type": "array"
+        },
+        "introduced_in_chapter": {
+          "minimum": 1,
+          "title": "Introduced In Chapter",
+          "type": "integer"
+        },
+        "introduction_id": {
+          "$ref": "#/$defs/StableId"
+        },
+        "statement": {
+          "minLength": 1,
+          "title": "Statement",
+          "type": "string"
+        }
+      },
+      "required": [
+        "introduction_id",
+        "statement",
+        "introduced_in_chapter"
+      ],
+      "title": "PlannedIntroduction",
+      "type": "object"
+    },
     "ProjectId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "ProjectId",
@@ -635,6 +845,73 @@
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "RunId",
       "type": "string"
+    },
+    "SceneBlueprint": {
+      "description": "One scene of a chapter's execution detail.",
+      "properties": {
+        "beats": {
+          "items": {
+            "$ref": "#/$defs/ExecutionBeatBlueprint"
+          },
+          "minItems": 1,
+          "title": "Beats",
+          "type": "array"
+        },
+        "budget_characters": {
+          "minimum": 1,
+          "title": "Budget Characters",
+          "type": "integer"
+        },
+        "entry_condition": {
+          "minLength": 1,
+          "title": "Entry Condition",
+          "type": "string"
+        },
+        "exit_condition": {
+          "minLength": 1,
+          "title": "Exit Condition",
+          "type": "string"
+        },
+        "location": {
+          "minLength": 1,
+          "title": "Location",
+          "type": "string"
+        },
+        "narrative_task": {
+          "minLength": 1,
+          "title": "Narrative Task",
+          "type": "string"
+        },
+        "participants": {
+          "default": [],
+          "items": {
+            "minLength": 1,
+            "type": "string"
+          },
+          "title": "Participants",
+          "type": "array"
+        },
+        "pov": {
+          "minLength": 1,
+          "title": "Pov",
+          "type": "string"
+        },
+        "scene_id": {
+          "$ref": "#/$defs/StableId"
+        }
+      },
+      "required": [
+        "scene_id",
+        "narrative_task",
+        "location",
+        "pov",
+        "entry_condition",
+        "exit_condition",
+        "beats",
+        "budget_characters"
+      ],
+      "title": "SceneBlueprint",
+      "type": "object"
     },
     "SchemaVersion": {
       "pattern": "^[0-9]+\\.[0-9]+\\.[0-9]+$",
@@ -1370,6 +1647,22 @@
           "title": "Participating Entity Ids",
           "type": "array"
         },
+        "planned_introductions": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlannedIntroduction"
+          },
+          "title": "Planned Introductions",
+          "type": "array"
+        },
+        "planned_participants": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/PlanParticipant"
+          },
+          "title": "Planned Participants",
+          "type": "array"
+        },
         "pov": {
           "minLength": 1,
           "title": "Pov",
@@ -1391,6 +1684,14 @@
             "type": "string"
           },
           "title": "Required Beats",
+          "type": "array"
+        },
+        "scene_blueprints": {
+          "default": [],
+          "items": {
+            "$ref": "#/$defs/SceneBlueprint"
+          },
+          "title": "Scene Blueprints",
           "type": "array"
         },
         "scene_goals": {

@@ -12,6 +12,13 @@ from typing import cast
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.benchmark import PlanRootDocument
 from novel_agent.domain.changes import CommitRequest, CommitStatus, ValidationStatus
+from novel_agent.domain.creation_step import (
+    CreationStep,
+    covering_chapter_set,
+    covering_volume,
+    derive_plan_readiness,
+    select_next_creation_step,
+)
 from novel_agent.domain.creative_runtime import (
     DRAFT_REVISION_DIRECTIVE_MEDIA_TYPE,
     OPERATOR_PLAN_REVIEW_MEDIA_TYPE,
@@ -1341,7 +1348,7 @@ class CreativeRuntimeService:
                     return self._result(
                         settled, CreativeRunTerminal.PROGRESSED, "lookahead_pending"
                     )
-                if task.horizon_end is not None and task.chapter_index >= task.horizon_end:
+                if self._horizon_is_exhausted(task):
                     planning = self._next_planning_after_horizon(
                         task,
                         snapshot.snapshot_id,
@@ -1996,7 +2003,70 @@ class CreativeRuntimeService:
         snapshot_id: StableId,
         policy: CreativeRunPolicy,
     ) -> TaskRecord:
+        """Return the one successor the *current accepted root* requires.
+
+        The decision is derived from the projected PlanRoot and the committed
+        text cursor, not from the previous task's ``plan_level``.  A chapter set
+        whose next chapter has no accepted execution detail produces a CHAPTER
+        refinement, never a Draft; a finished CHAPTER task produces the next
+        chapter's refinement while that chapter is still inside its window.
+        """
+
+        successor = self._creation_step_successor(task, snapshot_id, policy)
+        if successor is None:
+            # The target is already satisfied; keep the previous task's shape so
+            # the caller's completion branch stays reachable.
+            return self._draft_task(task, snapshot_id, task.chapter_index + 1)
+        return successor
+
+    def _creation_step_successor(
+        self,
+        task: TaskRecord,
+        snapshot_id: StableId,
+        policy: CreativeRunPolicy,
+    ) -> TaskRecord | None:
+        """Build the successor task for the next hierarchical creation step."""
+
+        # A CHAPTER task's own basis commit already contains the execution it
+        # just produced, so "cursor + 1" would silently skip that chapter and
+        # start refining the next one.  Ask about the chapter this turn was
+        # actually working on; a planning task always works one chapter ahead of
+        # the committed cursor.
+        target_chapter = (
+            task.horizon_start
+            if task.plan_level is PlanLevel.CHAPTER and task.horizon_start is not None
+            else task.chapter_index + 1
+        )
+        if task.chapter_index >= task.target_chapters and target_chapter > task.target_chapters:
+            return None
+        # A non-rolling task's own level is trusted authority, not a hint: a
+        # STORY task always plans the volume next, whatever the current root
+        # happens to contain.  Only the rolling levels need the root to decide
+        # whether the next step is refinement or writing.
         if task.plan_level is PlanLevel.STORY:
+            step = CreationStep.ARC_VOLUME
+        elif task.plan_level is PlanLevel.ARC_VOLUME:
+            step = CreationStep.CHAPTER_SET
+        else:
+            plan = self._accepted_plan_root(task.basis_commit)
+            if plan is None:
+                # Without a readable accepted root the rolling decision cannot
+                # be derived; keep the historical draft successor so the
+                # existing readiness gate -- not a guess here -- reports why.
+                return self._draft_task(task, snapshot_id, task.chapter_index + 1)
+            try:
+                readiness = derive_plan_readiness(plan, target_chapter=target_chapter)
+            except ValueError as error:
+                raise RuntimeError(f"accepted PlanRoot is ambiguous: {error}") from error
+            step = select_next_creation_step(
+                committed_chapter=task.chapter_index,
+                target_chapter=task.target_chapters + 1,
+                from_chapter=target_chapter,
+                state=readiness,
+            )
+        if step is CreationStep.COMPLETE:
+            return None
+        if step is CreationStep.ARC_VOLUME:
             return self._plan_candidate_successor(
                 task,
                 snapshot_id,
@@ -2005,12 +2075,18 @@ class CreativeRuntimeService:
                 horizon_end=None,
                 generation=self._next_planning_generation(task, PlanLevel.ARC_VOLUME),
             )
-        if task.plan_level is PlanLevel.ARC_VOLUME:
-            horizon_start = task.chapter_index + 1
+        if step is CreationStep.CHAPTER_SET:
+            plan = self._accepted_plan_root(task.basis_commit)
+            volume = (
+                None if plan is None else covering_volume(plan, target_chapter=target_chapter)[0]
+            )
+            horizon_start = target_chapter
             horizon_end = min(
                 task.target_chapters,
-                task.chapter_index + policy.planning_horizon,
+                target_chapter + policy.planning_horizon - 1,
             )
+            if volume is not None and volume.chapter_end is not None:
+                horizon_end = min(horizon_end, volume.chapter_end)
             return self._plan_candidate_successor(
                 task,
                 snapshot_id,
@@ -2018,7 +2094,59 @@ class CreativeRuntimeService:
                 horizon_start=horizon_start,
                 horizon_end=horizon_end,
             )
-        return self._draft_task(task, snapshot_id, task.chapter_index + 1)
+        if step is CreationStep.CHAPTER:
+            if task.plan_level is PlanLevel.CHAPTER and task.horizon_start == target_chapter:
+                # The turn that just finished was already the refinement of this
+                # exact chapter, and the accepted root still has no execution
+                # detail for it.  Re-deriving the same refinement unconditionally
+                # would create an identical task identity and loop forever, so
+                # hand the chapter to the Writer gate, which reports the concrete
+                # reason it is not writable.
+                return self._draft_task(task, snapshot_id, target_chapter)
+            # The cursor stays at the committed chapter; the horizon names the
+            # chapter being refined.  Moving the cursor here would violate the
+            # Stage 4 TextRoot end-of-text check.
+            return self._plan_candidate_successor(
+                task,
+                snapshot_id,
+                plan_level=PlanLevel.CHAPTER,
+                horizon_start=target_chapter,
+                horizon_end=target_chapter,
+            )
+        return self._draft_task(task, snapshot_id, target_chapter)
+
+    def _horizon_is_exhausted(self, task: TaskRecord) -> bool:
+        """Return whether the committed cursor has reached the accepted window end.
+
+        The previous check compared the cursor against the *task's own* horizon
+        end.  A single-chapter refinement has horizon 6-6 while its accepted
+        window is 6-10, so that comparison would roll a new chapter set after
+        chapter 6 instead of continuing the accepted window.
+        """
+
+        if task.horizon_end is None:
+            return True
+        if task.chapter_index >= task.horizon_end:
+            plan = self._accepted_plan_root(task.basis_commit)
+            if plan is None:
+                return True
+            try:
+                accepted_set = covering_chapter_set(plan, target_chapter=task.chapter_index + 1)
+            except ValueError:
+                return True
+            return accepted_set is None
+        return False
+
+    def _accepted_plan_root(self, commit_id: CommitId) -> PlanRootDocument | None:
+        """Read the accepted PlanRoot at one commit, or None when unreadable."""
+
+        try:
+            manifest = self._commits.load_manifest(commit_id)
+            return PlanRootDocument.model_validate_json(
+                self._artifacts.read_verified(manifest.plan_root)
+            )
+        except (OSError, RuntimeError, UnicodeDecodeError, ValueError):
+            return None
 
     def _plan_candidate_successor(
         self,

@@ -6,6 +6,7 @@ import hashlib
 import re
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
+from enum import StrEnum
 
 from novel_agent.domain.artifacts import ArtifactRef, RootKind
 from novel_agent.domain.benchmark import TextRootDocument
@@ -52,13 +53,23 @@ from novel_agent.domain.planning import (
 from novel_agent.domain.planning import (
     PlanningLoopTerminal as Stage4PlanningLoopTerminal,
 )
+from novel_agent.domain.planning_gap import (
+    HISTORICAL_DEPENDENCY_UNRESOLVED,
+    DependencyExpectation,
+    GapDisposition,
+    QuestionPurpose,
+    VerifiedGapEvidence,
+    classify_gap,
+    disposition_diagnostic,
+)
 from novel_agent.domain.stage2 import (
     AccessScope,
     AgentMode,
     ContractRef,
     PlanningTask,
 )
-from novel_agent.domain.world import PlanLevel
+from novel_agent.domain.text import SourceBoundEvidenceRequirement
+from novel_agent.domain.world import PlanLevel, TruthClass
 from novel_agent.services.artifacts import ArtifactRepository
 from novel_agent.services.commits import CommitService
 from novel_agent.services.content_addressing import canonical_json_bytes, content_id
@@ -100,6 +111,33 @@ _NON_AUTHOR_PLANNING_MEDIA_TYPES = frozenset(
         "application/vnd.novel-agent.stage5-acceptance-receipt+json",
     }
 )
+
+
+#: Truth classes that are a sourced negative rather than silence.  A contested
+#: or disproved record is evidence about the proposition, so it must not be
+#: reported as "no support found".
+_NEGATIVE_TRUTH_CLASSES = frozenset(
+    {TruthClass.CONTESTED, TruthClass.DISPROVED, TruthClass.RETCONNED}
+)
+
+
+@dataclass(frozen=True, slots=True)
+class _MemoryGapAdmission:
+    """What one unresolved mandatory facet set is allowed to produce."""
+
+    findings: tuple[ArtifactRef, ...]
+    diagnostic_codes: tuple[str, ...]
+
+
+def _enum_or_none[EnumT: StrEnum](enum_type: type[EnumT], value: str | None) -> EnumT | None:
+    """Decode a stored enum value without letting an unknown one pass silently."""
+
+    if value is None:
+        return None
+    try:
+        return enum_type(value)
+    except ValueError as error:
+        raise ValueError(f"unknown {enum_type.__name__} value {value!r}") from error
 
 
 @dataclass(frozen=True, slots=True)
@@ -145,16 +183,35 @@ class ProductionStage4InvocationFactory:
 
     @staticmethod
     def _mode(request: PlanningLoopRequest) -> AgentMode:
+        """Select the Planner mode from the task's trusted plan level.
+
+        REPLAN is an operation purpose, not a tree level.  A V2 REPLAN that
+        names its target level must use that level's Planner so the revision
+        keeps the level's own payload contract; falling through to the generic
+        REPLAN mode for a levelled task would let a chapter revision drop the
+        chapter contract.  Only a REPLAN that names no legal level keeps the
+        generic mode.
+        """
+
+        level_mode = (
+            None
+            if request.plan_level is None
+            else {
+                PlanLevel.STORY: AgentMode.STORY,
+                PlanLevel.ARC_VOLUME: AgentMode.ARC_VOLUME,
+                PlanLevel.CHAPTER_SET: AgentMode.CHAPTER_SET,
+                PlanLevel.CHAPTER: AgentMode.CHAPTER,
+                PlanLevel.SCENE: AgentMode.SCENE,
+            }.get(request.plan_level)
+        )
         if request.purpose.value == "replan":
-            return AgentMode.REPLAN
-        if request.plan_level is PlanLevel.STORY:
-            return AgentMode.STORY
-        if request.plan_level is PlanLevel.ARC_VOLUME:
-            return AgentMode.ARC_VOLUME
-        if request.plan_level is PlanLevel.CHAPTER:
-            return AgentMode.CHAPTER
-        if request.plan_level is PlanLevel.SCENE:
-            return AgentMode.SCENE
+            if request.plan_level is None:
+                return AgentMode.REPLAN
+            if level_mode is None:  # pragma: no cover - PlanLevel is exhaustive
+                raise ValueError("Stage 4 REPLAN names an unsupported plan level")
+            return level_mode
+        if level_mode is not None:
+            return level_mode
         return AgentMode.CHAPTER_SET
 
     def _allowed_skill_ids(self, mode: AgentMode) -> tuple[StableId, ...]:
@@ -559,15 +616,27 @@ class Stage4PlanningLeafAdapter:
             result.diagnostic_codes[0] if result.diagnostic_codes else result.terminal.value
         )
         artifact_refs = result.event_artifacts
+        gap_diagnostics = list(result.diagnostic_codes)
         if diagnostic == "PLANNER_MEMORY_FACETS_UNRESOLVED" and request.attempt_id is not None:
-            finding_ref = self._memory_gap_finding(
+            admission = self._memory_gap_admission(
                 request,
                 detailed,
                 result,
                 attempt_id=request.attempt_id,
             )
-            if finding_ref is not None:
-                artifact_refs = tuple(dict.fromkeys((*artifact_refs, finding_ref)))
+            if admission.findings:
+                artifact_refs = tuple(dict.fromkeys((*artifact_refs, *admission.findings)))
+            # The disposition of a non-closing question is a first-class result,
+            # not a log line.  A planner terminal that found no trusted support
+            # reports an unresolved historical dependency instead of pretending
+            # the canon omitted a fact.
+            for code in admission.diagnostic_codes:
+                if code not in gap_diagnostics:
+                    gap_diagnostics.append(code)
+            if not admission.findings:
+                diagnostic = (
+                    admission.diagnostic_codes[0] if admission.diagnostic_codes else diagnostic
+                )
         return PlanningLoopResult(
             result_id=bounded_stable_id(
                 f"{request.task_id.root}.planner-result",
@@ -579,24 +648,26 @@ class Stage4PlanningLeafAdapter:
             artifact_refs=artifact_refs,
             failure_code=diagnostic[:128],
             failure_detail=(
-                f"Stage 4 terminal: {result.terminal.value}; " + "; ".join(result.diagnostic_codes)
+                f"Stage 4 terminal: {result.terminal.value}; " + "; ".join(gap_diagnostics)
             )[:512],
         )
 
-    def _memory_gap_finding(
+    def _memory_gap_admission(
         self,
         request: PlanningLoopRequest,
         detailed: Stage4PlanningLoopRequest,
         result: Stage4PlanningLoopResult,
         *,
         attempt_id: StableId,
-    ) -> ArtifactRef | None:
-        """Materialize only an evidence-bound Canon extraction handoff.
+    ) -> _MemoryGapAdmission:
+        """Decide what one unresolved mandatory facet set actually means.
 
-        A Planner terminal is not enough by itself.  The handoff requires the
-        exact Stage1 context, an immutable checkpoint, the canonical text root,
-        and the current chapter cutoff.  Missing any of these keeps the typed
-        Planner terminal fail-closed.
+        A Planner terminal alone proves nothing about the canon.  This method
+        reconstructs the host-verified evidence state, classifies the reviewed
+        question with :func:`classify_gap`, and materializes a Canon extraction
+        handoff only for the one disposition that a repair can act on.  Every
+        other disposition becomes a typed diagnostic that the planning loop
+        owns, so an unresolved dependency can never masquerade as an omission.
         """
 
         if (
@@ -604,7 +675,10 @@ class Stage4PlanningLeafAdapter:
             or result.memory_context_ref is None
             or not detailed.author_intent_artifacts
         ):
-            return None
+            return _MemoryGapAdmission(
+                findings=(),
+                diagnostic_codes=(HISTORICAL_DEPENDENCY_UNRESOLVED,),
+            )
         checkpoint_ref = next(
             (
                 ref
@@ -614,7 +688,10 @@ class Stage4PlanningLeafAdapter:
             None,
         )
         if checkpoint_ref is None:
-            return None
+            return _MemoryGapAdmission(
+                findings=(),
+                diagnostic_codes=(HISTORICAL_DEPENDENCY_UNRESOLVED,),
+            )
         problem_identity_seed = None
         try:
             checkpoint = PlanningLoopCheckpoint.model_validate_json(
@@ -631,7 +708,10 @@ class Stage4PlanningLeafAdapter:
                 self._artifacts.read_verified(result.memory_context_ref), strict=False
             )
         except (ValueError, RuntimeError):
-            return None
+            return _MemoryGapAdmission(
+                findings=(),
+                diagnostic_codes=(HISTORICAL_DEPENDENCY_UNRESOLVED,),
+            )
         trace = next(
             (
                 item
@@ -645,15 +725,36 @@ class Stage4PlanningLeafAdapter:
             None,
         )
         if trace is None:
-            return None
+            return _MemoryGapAdmission(
+                findings=(),
+                diagnostic_codes=(HISTORICAL_DEPENDENCY_UNRESOLVED,),
+            )
         unresolved_facets = tuple(
             receipt.need_facet_id
             for receipt in trace.facet_receipts
             if receipt.mandatory and receipt.status is not FacetClosureStatus.SUPPORTED
         )
         if not unresolved_facets:
-            return None
+            return _MemoryGapAdmission(
+                findings=(),
+                diagnostic_codes=(HISTORICAL_DEPENDENCY_UNRESOLVED,),
+            )
         cutoff = NarrativePosition(chapter_index=request.chapter_index)
+        source_evidence_requirement = (
+            None
+            if problem_identity_seed is None
+            else problem_identity_seed.source_evidence_requirement
+        )
+        disposition = self._classify_memory_gap(
+            request,
+            trace,
+            source_evidence_requirement=source_evidence_requirement,
+        )
+        if disposition is not GapDisposition.CANON_EXTRACTION_GAP:
+            return _MemoryGapAdmission(
+                findings=(),
+                diagnostic_codes=(disposition_diagnostic(disposition),),
+            )
         boundary = InformationBoundary(
             boundary_id=bounded_stable_id(
                 f"boundary.memory-gap.{request.task_id.root}",
@@ -691,26 +792,11 @@ class Stage4PlanningLeafAdapter:
             "application/vnd.novel-agent.source-visibility-receipt+json",
             self._schema_version,
         )
-        identity = content_id(
-            {
-                "request": detailed.request_id.root,
-                "attempt": attempt_id.root,
-                "need": trace.need_id.root,
-                "facets": tuple(item.root for item in unresolved_facets),
-            }
-        ).root.removeprefix("sha256:")[:32]
-        unresolved_kinds = {
-            receipt.facet_kind
-            for receipt in trace.facet_receipts
-            if receipt.mandatory
-            and receipt.status is not FacetClosureStatus.SUPPORTED
-            and receipt.need_facet_id in unresolved_facets
-        }
-        # Graph Curator owns relation candidates only. Causal-history gaps
-        # are event/state evidence and must be handed to the ordinary Curator;
-        # its graph profile cannot represent those records and would
-        # deterministically drop source-bound consequence markers.
-        owner = self._memory_gap_owner(unresolved_kinds)
+        if problem_identity_seed is not None and problem_identity_seed.need_id != trace.need_id:
+            return _MemoryGapAdmission(
+                findings=(),
+                diagnostic_codes=(HISTORICAL_DEPENDENCY_UNRESOLVED,),
+            )
         compiled = trace.compiled_query_bundle
         target_query = self._repair_target_query(compiled)
         if not target_query:
@@ -724,79 +810,99 @@ class Stage4PlanningLeafAdapter:
         semantic_question = target_query
         need_query = target_query
         if problem_identity_seed is not None:
-            if problem_identity_seed.need_id != trace.need_id:
-                return None
             need_query = problem_identity_seed.need_query
             semantic_question = problem_identity_seed.semantic_question
-        source_evidence_requirement = (
-            None
-            if problem_identity_seed is None
-            else problem_identity_seed.source_evidence_requirement
+        identity = self._attempt_problem_identity(
+            request,
+            attempt_id=attempt_id,
+            trace_need_id=trace.need_id,
+            unresolved_facets=unresolved_facets,
         )
-        finding = MemoryRepairFinding(
-            finding_id=StableId(f"memory-gap.{identity}"),
-            incident_id=StableId(f"incident.memory-gap.{identity}"),
-            planner_run_id=request.run_id,
-            planner_task_id=request.task_id,
-            planner_attempt_id=attempt_id,
-            planner_request_id=detailed.request_id,
-            planner_intent_ref=detailed.author_intent_artifacts[0],
-            planner_checkpoint_ref=checkpoint_ref,
-            project_id=request.project_id,
-            base_commit=request.basis_commit,
-            basis_snapshot_id=request.basis_snapshot,
-            projection_snapshot_id=request.basis_snapshot,
-            information_boundary=boundary,
-            cutoff=cutoff,
-            access_scope=AccessScope.WRITER_SAFE,
-            source_artifact_refs=(detailed.accepted_text_ref,),
-            source_visibility_receipt_refs=(visibility_ref,),
-            source_chapter_indices=self._source_chapter_indices(
-                trace,
-                cutoff.chapter_index,
-                required_chapter=(
-                    None
-                    if source_evidence_requirement is None
-                    else source_evidence_requirement.source_chapter_index
+        stable_identity = self._stable_problem_identity(
+            request,
+            semantic_question=semantic_question,
+            trace_need_id=trace.need_id,
+            unresolved_facets=unresolved_facets,
+            source_evidence_digest=self._source_evidence_digest(
+                request,
+                unresolved_facets=unresolved_facets,
+                source_evidence_requirement=source_evidence_requirement,
+            ),
+        )
+        # A mixed problem is split into one finding per owner so a
+        # relation-only graph profile never receives event/state facets it
+        # cannot represent.  Both children share the parent problem key.
+        findings: list[ArtifactRef] = []
+        for owner, owner_facets in self._facet_groups_by_owner(trace, unresolved_facets):
+            finding = MemoryRepairFinding(
+                finding_id=StableId(f"memory-gap.{identity}.{owner.value}"),
+                incident_id=StableId(f"incident.memory-gap.{identity}"),
+                planner_run_id=request.run_id,
+                planner_task_id=request.task_id,
+                planner_attempt_id=attempt_id,
+                planner_request_id=detailed.request_id,
+                planner_intent_ref=detailed.author_intent_artifacts[0],
+                planner_checkpoint_ref=checkpoint_ref,
+                project_id=request.project_id,
+                base_commit=request.basis_commit,
+                basis_snapshot_id=request.basis_snapshot,
+                projection_snapshot_id=request.basis_snapshot,
+                information_boundary=boundary,
+                cutoff=cutoff,
+                access_scope=AccessScope.WRITER_SAFE,
+                source_artifact_refs=(detailed.accepted_text_ref,),
+                source_visibility_receipt_refs=(visibility_ref,),
+                source_chapter_indices=self._source_chapter_indices(
+                    trace,
+                    cutoff.chapter_index,
+                    required_chapter=(
+                        None
+                        if source_evidence_requirement is None
+                        else source_evidence_requirement.source_chapter_index
+                    ),
                 ),
-            ),
-            source_evidence_requirement=source_evidence_requirement,
-            need_id=trace.need_id,
-            need_query=need_query[:2048],
-            semantic_question=semantic_question[:2048],
-            entity_ids=tuple(
-                dict.fromkeys(
-                    entity_id
-                    for candidate in trace.candidates
-                    for entity_id in candidate.unit.entity_ids
-                )
-            ),
-            mandatory_facet_ids=unresolved_facets,
-            graph_receipt_refs=(),
-            l0_receipt_refs=(),
-            semantic_judge_receipt_refs=trace.semantic_receipt_refs,
-            classification=MemoryGapClassification.CANON_EXTRACTION_GAP,
-            repair_owner=owner,
-            target_root_kind=RootKind.WORLD,
-            repair_scope=RepairScope(
-                field_paths=(
-                    ("world.entities", "world.relations")
-                    if owner is MemoryRepairOwner.GRAPH_CURATOR
-                    else (
-                        "world.entities",
-                        "world.events",
-                        "world.states",
-                        "world.obligations",
+                source_evidence_requirement=source_evidence_requirement,
+                need_id=trace.need_id,
+                need_query=need_query[:2048],
+                semantic_question=semantic_question[:2048],
+                entity_ids=tuple(
+                    dict.fromkeys(
+                        entity_id
+                        for candidate in trace.candidates
+                        for entity_id in candidate.unit.entity_ids
                     )
+                ),
+                mandatory_facet_ids=owner_facets,
+                graph_receipt_refs=(),
+                l0_receipt_refs=(),
+                semantic_judge_receipt_refs=trace.semantic_receipt_refs,
+                classification=MemoryGapClassification.CANON_EXTRACTION_GAP,
+                repair_owner=owner,
+                target_root_kind=RootKind.WORLD,
+                repair_scope=RepairScope(
+                    field_paths=(
+                        ("world.entities", "world.relations")
+                        if owner is MemoryRepairOwner.GRAPH_CURATOR
+                        else (
+                            "world.entities",
+                            "world.events",
+                            "world.states",
+                            "world.obligations",
+                        )
+                    )
+                ),
+                no_progress_key=stable_identity,
+                attempt_problem_key=StableId(f"memory-problem-attempt.{identity}"),
+                owned_facet_ids=owner_facets,
+            )
+            findings.append(
+                self._artifacts.put(
+                    canonical_json_bytes(finding.model_dump(mode="json")),
+                    "application/vnd.novel-agent.memory-repair-finding+json",
+                    self._schema_version,
                 )
-            ),
-            no_progress_key=StableId(f"memory-gap-progress.{identity}"),
-        )
-        return self._artifacts.put(
-            canonical_json_bytes(finding.model_dump(mode="json")),
-            "application/vnd.novel-agent.memory-repair-finding+json",
-            self._schema_version,
-        )
+            )
+        return _MemoryGapAdmission(findings=tuple(findings), diagnostic_codes=())
 
     @staticmethod
     def _memory_gap_owner(unresolved_kinds: set[NeedFacetKind]) -> MemoryRepairOwner:
@@ -807,6 +913,247 @@ class Stage4PlanningLeafAdapter:
             if NeedFacetKind.RELATION_STATE in unresolved_kinds
             else MemoryRepairOwner.ORDINARY_CURATOR
         )
+
+    @staticmethod
+    def _facet_groups_by_owner(
+        trace: object,
+        unresolved_facets: tuple[StableId, ...],
+    ) -> tuple[tuple[MemoryRepairOwner, tuple[StableId, ...]], ...]:
+        """Split unresolved facets into the owners that can actually repair them.
+
+        A Graph Curator profile can represent relation records only.  When one
+        reviewed question needs both a relation and an event/state record, the
+        single-owner shortcut would hand the unrepresentable half to a profile
+        that deterministically drops it.  Each group keeps the same parent
+        problem and its own facet subset instead.
+        """
+
+        relation_facets: list[StableId] = []
+        other_facets: list[StableId] = []
+        for receipt in getattr(trace, "facet_receipts", ()):
+            if receipt.need_facet_id not in unresolved_facets:
+                continue
+            destination = (
+                relation_facets
+                if receipt.facet_kind is NeedFacetKind.RELATION_STATE
+                else other_facets
+            )
+            destination.append(receipt.need_facet_id)
+        groups: list[tuple[MemoryRepairOwner, tuple[StableId, ...]]] = []
+        if relation_facets:
+            groups.append((MemoryRepairOwner.GRAPH_CURATOR, tuple(relation_facets)))
+        if other_facets:
+            groups.append((MemoryRepairOwner.ORDINARY_CURATOR, tuple(other_facets)))
+        if not groups:
+            # Legacy receipts may carry no facet rows at all.  Preserve the
+            # historical single-owner handoff for exactly that shape.
+            groups.append((MemoryRepairOwner.ORDINARY_CURATOR, unresolved_facets))
+        return tuple(groups)
+
+    def _classify_memory_gap(
+        self,
+        request: PlanningLoopRequest,
+        trace: object,
+        *,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None,
+    ) -> GapDisposition:
+        """Return the host-verified disposition of one unresolved facet set.
+
+        The semantics come from the Need the trace was produced for, so a
+        retried or resumed run reaches the same disposition without re-asking a
+        model.  A trace predating those fields keeps the fail-closed historical
+        reading rather than claiming a future design it never declared.
+        """
+
+        purpose = _enum_or_none(QuestionPurpose, getattr(trace, "question_purpose", None))
+        expectation = _enum_or_none(
+            DependencyExpectation, getattr(trace, "dependency_expectation", None)
+        )
+        if purpose is None:
+            purpose = QuestionPurpose.VERIFY_HISTORY
+        if expectation is None:
+            expectation = DependencyExpectation.CHECK_STATUS
+        evidence = self._verified_gap_evidence(
+            request,
+            trace,
+            source_evidence_requirement=source_evidence_requirement,
+        )
+        return classify_gap(
+            purpose=purpose,
+            dependency_expectation=expectation,
+            evidence=evidence,
+        )
+
+    def _verified_gap_evidence(
+        self,
+        request: PlanningLoopRequest,
+        trace: object,
+        *,
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None,
+    ) -> VerifiedGapEvidence:
+        """Read the frozen retrieval trace into host-verified gap evidence.
+
+        Positive source support requires exact, cutoff-safe, canon-authored
+        evidence for the requested proposition.  A retrieval permission, a
+        paragraph that happens to mention a participant, or a plan-authored
+        unit is not support, and the absence of support is never a negative
+        answer.
+        """
+
+        cutoff = request.chapter_index
+        positive_source = False
+        explicit_negative = False
+        for candidate in getattr(trace, "candidates", ()):
+            if not getattr(candidate, "selected", False):
+                continue
+            unit = candidate.unit
+            truth_class = getattr(unit, "truth_class", None)
+            if truth_class is not None and truth_class is not TruthClass.ACCEPTED_WORLD_FACT:
+                # Assertions, rumors, predictions and hypotheticals can never
+                # support a world fact, and a contested or disproved record is
+                # a sourced negative rather than silence.
+                if truth_class in _NEGATIVE_TRUTH_CLASSES:
+                    explicit_negative = True
+                continue
+            if not self._unit_is_cutoff_safe(unit, cutoff):
+                continue
+            if self._unit_meets_source_evidence_requirement(unit, source_evidence_requirement):
+                positive_source = True
+                break
+            if source_evidence_requirement is None and tuple(
+                getattr(unit, "evidence_refs", ()) or ()
+            ):
+                positive_source = True
+                break
+        return VerifiedGapEvidence(
+            # The projection is exact whenever this trace was produced from the
+            # task's frozen snapshot; a stale projection never reaches a
+            # Planner terminal, it fails the freshness gate earlier.
+            projection_exact=True,
+            positive_source_support=positive_source,
+            positive_projection_support=False,
+            explicit_negative_support=explicit_negative,
+            # The frozen source is expected to carry the record type this facet
+            # names, which is exactly what makes a supported source without a
+            # matching projection an extraction gap.
+            projection_expected=True,
+        )
+
+    @staticmethod
+    def _unit_is_cutoff_safe(unit: object, cutoff: int) -> bool:
+        start = getattr(unit, "narrative_start", None)
+        if isinstance(start, int) and start > cutoff:
+            return False
+        for evidence in getattr(unit, "evidence_refs", ()):
+            chapter_id = getattr(evidence, "chapter_id", None)
+            if chapter_id is None:
+                continue
+            match = re.search(r"\.(\d+)$", chapter_id.root)
+            if match and int(match.group(1)) > cutoff:
+                return False
+        return True
+
+    @staticmethod
+    def _unit_meets_source_evidence_requirement(
+        unit: object,
+        requirement: SourceBoundEvidenceRequirement | None,
+    ) -> bool:
+        """Return whether one unit carries the exact required source span.
+
+        A pre-registered requirement is the strongest available proof that the
+        frozen source states the target proposition: it names the artifact,
+        chapter, span and consequence markers.  A unit only satisfies it when
+        the immutable text really contains every marker.
+        """
+
+        if requirement is None:
+            return False
+        if requirement.source_artifact_id not in set(getattr(unit, "source_refs", ())):
+            source_artifact = getattr(unit, "source_artifact", None)
+            if source_artifact != requirement.source_artifact_id:
+                return False
+        text = getattr(unit, "text", "")
+        if not isinstance(text, str):
+            return False
+        return all(marker in text for marker in requirement.required_consequence_markers)
+
+    @staticmethod
+    def _attempt_problem_identity(
+        request: PlanningLoopRequest,
+        *,
+        attempt_id: StableId,
+        trace_need_id: StableId,
+        unresolved_facets: tuple[StableId, ...],
+    ) -> str:
+        """Return the attempt-scoped identity of one reported problem."""
+
+        return content_id(
+            {
+                "request": request.task_id.root,
+                "attempt": attempt_id.root,
+                "need": trace_need_id.root,
+                "facets": tuple(item.root for item in unresolved_facets),
+            }
+        ).root.removeprefix("sha256:")[:32]
+
+    @staticmethod
+    def _stable_problem_identity(
+        request: PlanningLoopRequest,
+        *,
+        semantic_question: str,
+        trace_need_id: StableId,
+        unresolved_facets: tuple[StableId, ...],
+        source_evidence_digest: str,
+    ) -> StableId:
+        """Return the cross-attempt dedup identity of one Planner problem.
+
+        It contains the project, the source-fact version, the cutoff, the
+        normalized question, the facet set and the trusted source binding.  It
+        deliberately excludes run identity, attempt identity and any random
+        question identity, so retrying the same unresolved problem cannot queue
+        a second identical maintenance task.  A real change to the source
+        evidence digest does yield a new opportunity.
+        """
+
+        semantic = semantic_question or trace_need_id.root
+        if request.basis_snapshot is None:  # pragma: no cover - post-Genesis invariant
+            raise ValueError("Planner gap identity requires an exact basis snapshot")
+        digest = content_id(
+            {
+                "project": request.project_id.root,
+                "basis_commit": request.basis_commit.root,
+                "basis_snapshot": request.basis_snapshot.root,
+                "cutoff": request.chapter_index,
+                "semantic_question": semantic,
+                "facets": tuple(sorted(item.root for item in unresolved_facets)),
+                "source_evidence": source_evidence_digest,
+            }
+        ).root.removeprefix("sha256:")[:32]
+        return StableId(f"memory-problem.{digest}")
+
+    @staticmethod
+    def _source_evidence_digest(
+        request: PlanningLoopRequest,
+        *,
+        unresolved_facets: tuple[StableId, ...],
+        source_evidence_requirement: SourceBoundEvidenceRequirement | None,
+    ) -> str:
+        """Return a digest of the frozen source state this problem reads."""
+
+        if request.basis_snapshot is None:  # pragma: no cover - post-Genesis invariant
+            raise ValueError("Planner gap identity requires an exact basis snapshot")
+        return content_id(
+            {
+                "basis_commit": request.basis_commit.root,
+                "basis_snapshot": request.basis_snapshot.root,
+                "facets": tuple(sorted(item.root for item in unresolved_facets)),
+                "requirement": (
+                    None
+                    if source_evidence_requirement is None
+                    else source_evidence_requirement.model_dump(mode="json")
+                ),
+            }
+        ).root.removeprefix("sha256:")[:32]
 
     @staticmethod
     def _source_chapter_indices(
@@ -906,7 +1253,12 @@ class Stage4PlanningLeafAdapter:
             if isinstance(narrative_start, int) and 0 <= narrative_start <= cutoff:
                 candidate_chapters.append(narrative_start)
             for evidence in getattr(unit, "evidence_refs", ()):
-                match = re.search(r"\.(\d+)$", evidence.chapter_id.root)
+                chapter_id = getattr(evidence, "chapter_id", None)
+                if chapter_id is None:
+                    # Evidence that names no chapter cannot select a source
+                    # chapter; skip it instead of dereferencing a missing id.
+                    continue
+                match = re.search(r"\.(\d+)$", chapter_id.root)
                 if match:
                     chapter = int(match.group(1))
                     if chapter <= cutoff:

@@ -452,6 +452,19 @@
       ],
       "default": null
     },
+    "dependency_expectation": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Dependency Expectation"
+    },
     "entity_ids": {
       "default": [],
       "items": {
@@ -613,6 +626,19 @@
       "minLength": 1,
       "title": "Query Text",
       "type": "string"
+    },
+    "question_purpose": {
+      "anyOf": [
+        {
+          "minLength": 1,
+          "type": "string"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null,
+      "title": "Question Purpose"
     },
     "requirement": {
       "$ref": "#/$defs/RequirementLevel"

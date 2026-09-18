@@ -59,6 +59,16 @@
       "title": "ArtifactRef",
       "type": "object"
     },
+    "DependencyExpectation": {
+      "description": "What the reviewed plan asserts about the question's answer.",
+      "enum": [
+        "must_establish_existing_fact",
+        "check_status",
+        "no_historical_precondition"
+      ],
+      "title": "DependencyExpectation",
+      "type": "string"
+    },
     "GoalProposal": {
       "additionalProperties": false,
       "properties": {
@@ -115,6 +125,17 @@
           "title": "Blocking",
           "type": "boolean"
         },
+        "dependency_expectation": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/DependencyExpectation"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "entity_labels": {
           "default": [],
           "items": {
@@ -129,6 +150,30 @@
         "kind": {
           "$ref": "#/$defs/PlanningQuestionKind"
         },
+        "origin_field_path": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Origin Field Path"
+        },
+        "origin_plan_item_id": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/StableId"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
+        },
         "provenance": {
           "$ref": "#/$defs/PlanningReference"
         },
@@ -139,6 +184,17 @@
         },
         "question_id": {
           "$ref": "#/$defs/StableId"
+        },
+        "question_purpose": {
+          "anyOf": [
+            {
+              "$ref": "#/$defs/QuestionPurpose"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null
         },
         "relation_object": {
           "anyOf": [
@@ -233,6 +289,16 @@
     "ProjectId": {
       "pattern": "^[A-Za-z0-9][A-Za-z0-9._:-]{0,127}$",
       "title": "ProjectId",
+      "type": "string"
+    },
+    "QuestionPurpose": {
+      "description": "Whether a reviewed question looks backwards, at now, or forwards.",
+      "enum": [
+        "verify_history",
+        "check_current_state",
+        "design_future"
+      ],
+      "title": "QuestionPurpose",
       "type": "string"
     },
     "SchemaVersion": {

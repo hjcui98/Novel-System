@@ -2380,6 +2380,19 @@
           "title": "Compiled Query Bundle",
           "type": "object"
         },
+        "dependency_expectation": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dependency Expectation"
+        },
         "direct_unit_ids": {
           "default": [],
           "items": {
@@ -2504,6 +2517,19 @@
           },
           "title": "Query Unavailable Reasons",
           "type": "object"
+        },
+        "question_purpose": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Question Purpose"
         },
         "required_need_facet_ids": {
           "default": [],
@@ -3076,6 +3102,19 @@
           ],
           "default": null
         },
+        "dependency_expectation": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dependency Expectation"
+        },
         "entity_ids": {
           "default": [],
           "items": {
@@ -3237,6 +3276,19 @@
           "minLength": 1,
           "title": "Query Text",
           "type": "string"
+        },
+        "question_purpose": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Question Purpose"
         },
         "requirement": {
           "$ref": "#/$defs/RequirementLevel"

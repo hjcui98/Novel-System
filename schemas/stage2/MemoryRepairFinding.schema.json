@@ -486,6 +486,17 @@
       "title": "Anchor Receipt Refs",
       "type": "array"
     },
+    "attempt_problem_key": {
+      "anyOf": [
+        {
+          "$ref": "#/$defs/StableId"
+        },
+        {
+          "type": "null"
+        }
+      ],
+      "default": null
+    },
     "base_commit": {
       "$ref": "#/$defs/CommitId"
     },
@@ -561,6 +572,14 @@
     },
     "no_progress_key": {
       "$ref": "#/$defs/StableId"
+    },
+    "owned_facet_ids": {
+      "default": [],
+      "items": {
+        "$ref": "#/$defs/StableId"
+      },
+      "title": "Owned Facet Ids",
+      "type": "array"
     },
     "planner_attempt_id": {
       "$ref": "#/$defs/StableId"

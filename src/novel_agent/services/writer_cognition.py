@@ -6,6 +6,7 @@ import hashlib
 import re
 from dataclasses import dataclass
 from difflib import SequenceMatcher
+from enum import StrEnum
 from pathlib import Path
 
 from novel_agent.domain.agent_context import AgentContextView, ContextItemKind
@@ -17,10 +18,12 @@ from novel_agent.domain.generation import (
     WriterWorkPlanResult,
     WritingLengthPolicy,
     WritingLoopRequest,
+    WritingTaskContract,
     writer_length_repair_output_type,
 )
 from novel_agent.domain.ids import SchemaVersion, StableId
 from novel_agent.domain.model_calls import ModelCallRecord, ModelRequest
+from novel_agent.domain.plan_detail import validate_execution_allocation
 from novel_agent.domain.stage2 import (
     AgentMode,
     AgentType,
@@ -70,6 +73,148 @@ _SURFACE_RETRY_REPETITION_PENALTY = 1.10
 _LENGTH_REPAIR_MIN_POLICY_THRESHOLD = 1_000
 _LENGTH_REPAIR_MAX_ROUNDS = 3
 _LENGTH_REPAIR_REPETITION_PENALTY = 1.05
+
+#: Sentence-final punctuation.  A chapter may legitimately end on a deliberate
+#: ellipsis, dash, or closing quotation mark, so these are *candidates* for a
+#: completed sentence, never proof of one.
+_SENTENCE_TERMINALS = "。！？…!?；;—–"  # noqa: RUF001
+_CLOSING_MARKS = "”’」』）)》〉】〕｝\"')]"  # noqa: RUF001
+_OPENING_MARKS = "“‘「『（(《〈【〔｛\"')]}"  # noqa: RUF001
+_TRAILING_SUSPENSION = ("...", "……", "…")
+#: Characters that never end a chapter.  Ending on one is a truncation signal.
+_INCOMPLETE_TAIL = "，、,：:（(【[「『《<“‘\"'" + _OPENING_MARKS  # noqa: RUF001
+
+
+class TextIntegrityKind(StrEnum):
+    """How a candidate's ending should be treated."""
+
+    COMPLETE = "complete"
+    #: A definite generation or transport truncation: not a submittable candidate.
+    TRUNCATED = "truncated"
+    #: A suspicious ending that a human-readable review, not a hard gate, decides.
+    SEMANTIC_SUSPICION = "semantic_suspicion"
+
+
+@dataclass(frozen=True, slots=True)
+class TextIntegrityVerdict:
+    kind: TextIntegrityKind
+    reason: str = ""
+
+    @property
+    def is_definitely_incomplete(self) -> bool:
+        return self.kind is TextIntegrityKind.TRUNCATED
+
+
+def text_integrity_verdict(
+    text: str,
+    *,
+    provider_finished_by_length: bool = False,
+    expected_close_point: str | None = None,
+) -> TextIntegrityVerdict:
+    """Classify how a candidate ends without pretending to judge prose quality.
+
+    ``provider_finished_by_length`` is host evidence that the provider stopped at
+    its output limit; that is a transport fact, not an interpretation of the
+    text.  Everything else is a bounded surface reading: an unterminated quote
+    or a sentence that stops on a connector is worth review, while a deliberate
+    ellipsis, a closing quotation mark or a finished sentence is not.
+
+    A trailing full stop does **not** prove the chapter discharged its duties,
+    and a missing one does not prove it failed.  This function therefore never
+    claims completeness; it only refuses the endings that cannot be complete and
+    flags the ones a review should look at.
+    """
+
+    if provider_finished_by_length:
+        return TextIntegrityVerdict(
+            TextIntegrityKind.TRUNCATED,
+            "provider stopped at its output limit before the candidate finished",
+        )
+    stripped = text.rstrip()
+    if not stripped:
+        return TextIntegrityVerdict(
+            TextIntegrityKind.TRUNCATED,
+            "candidate contains no text",
+        )
+    if stripped[-1] in _INCOMPLETE_TAIL and not stripped.endswith(_TRAILING_SUSPENSION):
+        return TextIntegrityVerdict(
+            TextIntegrityKind.TRUNCATED,
+            f"candidate ends on an incomplete connector: {stripped[-1]!r}",
+        )
+    if _has_unbalanced_delimiter(stripped):
+        return TextIntegrityVerdict(
+            TextIntegrityKind.TRUNCATED,
+            "candidate leaves a quotation or bracket open",
+        )
+    if expected_close_point:
+        tail = stripped[-len(expected_close_point) - 40 :]
+        if expected_close_point.strip() and expected_close_point.strip() not in tail:
+            return TextIntegrityVerdict(
+                TextIntegrityKind.SEMANTIC_SUSPICION,
+                "candidate tail does not reach the accepted beat close point",
+            )
+    if stripped[-1] not in _SENTENCE_TERMINALS + _CLOSING_MARKS:
+        return TextIntegrityVerdict(
+            TextIntegrityKind.SEMANTIC_SUSPICION,
+            "candidate does not end on sentence-final punctuation",
+        )
+    return TextIntegrityVerdict(TextIntegrityKind.COMPLETE)
+
+
+def _has_unbalanced_delimiter(text: str) -> bool:
+    """Return whether the visible tail leaves a quote or bracket open."""
+
+    tail = text[-400:]
+    for opener, closer in (("“", "”"), ("‘", "’"), ("「", "」"), ("『", "』")):  # noqa: RUF001
+        if tail.count(opener) > tail.count(closer):
+            return True
+    for opener, closer in (("（", "）"), ("(", ")"), ("【", "】"), ("[", "]")):  # noqa: RUF001
+        if tail.count(opener) > tail.count(closer):
+            return True
+    # A straight double quote has no orientation, so only an odd count in the
+    # tail is a signal; prose quoting is common enough that this stays a
+    # suspicion-free hard signal only in the tail window.
+    return tail.count('"') % 2 == 1
+
+
+def tail_repeats_recent_prose(
+    prose: str,
+    draft_text: str,
+    *,
+    tail_characters: int = 300,
+) -> bool:
+    """Detect a repeated *ending template* that whole-chapter similarity misses.
+
+    The existing near-copy gate compares a draft with a whole previous chapter,
+    so an identical closing paragraph in an otherwise different chapter falls
+    below its thresholds.  This compares only the current draft's tail against
+    the previous chapter's tail, which is where a repeated lyrical closing beat
+    actually shows up.
+    """
+
+    previous = prose.strip()
+    current = draft_text.strip()
+    if len(previous) < _RECENT_PROSE_MIN_MATCH_CHARS or len(current) < tail_characters:
+        return False
+    window = min(tail_characters, len(current) // 2)
+    if window < _COMPACT_RECENT_PROSE_MIN_MATCH_CHARS:
+        return False
+    matcher = SequenceMatcher(
+        None,
+        previous[-tail_characters:],
+        current[-window:],
+        autojunk=False,
+    )
+    longest = matcher.find_longest_match(
+        0,
+        len(previous[-tail_characters:]),
+        0,
+        len(current[-window:]),
+    )
+    return (
+        longest.size >= _COMPACT_RECENT_PROSE_MIN_MATCH_CHARS
+        and longest.size / window >= _COMPACT_RECENT_PROSE_MIN_OVERLAP_RATIO
+    )
 
 
 def repeats_recent_prose(
@@ -149,9 +294,28 @@ def draft_surface_error(
     allowed_language_tokens: tuple[str, ...] = (),
     forbidden_reveals: tuple[str, ...] = (),
     recent_prose: tuple[tuple[str, bool], ...] = (),
+    provider_finished_by_length: bool = False,
 ) -> str | None:
-    """Pure final-surface gate shared by Writer cognition and Draft materialization."""
+    """Pure final-surface gate shared by Writer cognition and Draft materialization.
 
+    ``provider_finished_by_length`` is transport evidence about the response, not
+    an interpretation of the prose.  The OpenAI-compatible adapter already fails
+    closed on a ``length`` finish (it raises instead of returning text), so the
+    parameter exists for callers that hold the raw response or the ledger entry;
+    the text-based checks below are the backstop for a response that parses but
+    is plainly unfinished.
+    """
+
+    # A definitely incomplete ending is not a style defect; it must not become a
+    # submittable candidate.  A mere suspicion is left to the Editor review
+    # below, because refusing every unusual ending would misjudge deliberate
+    # ellipses and suspense.
+    integrity = text_integrity_verdict(
+        draft_text,
+        provider_finished_by_length=provider_finished_by_length,
+    )
+    if integrity.is_definitely_incomplete:
+        return f"Writer draft is incomplete: {integrity.reason}"
     for marker in _INTERNAL_DRAFT_MARKERS:
         if marker in draft_text:
             return f"Writer draft contains internal planning marker: {marker}"
@@ -171,7 +335,48 @@ def draft_surface_error(
     for prose, compact_trail in recent_prose:
         if repeats_recent_prose(prose, draft_text, compact_trail=compact_trail):
             return "Writer draft repeats visible recent prose"
+    for prose, _compact_trail in recent_prose:
+        if tail_repeats_recent_prose(prose, draft_text):
+            return "Writer draft repeats the previous chapter's ending"
     return None
+
+
+def validate_work_plan_execution(
+    work_plan: WriterWorkPlan,
+    writing_task: WritingTaskContract,
+) -> None:
+    """Require the WorkPlan to cover the accepted execution blueprint.
+
+    A WorkPlan is an expression arrangement, not a second plan: it may choose
+    how to say things, but it may not drop an accepted beat or declare a total
+    the trusted length policy cannot accept.  A chapter with no V2 blueprint
+    keeps its historical string-beat contract and is not checked here.
+    """
+
+    blueprint = writing_task.scene_blueprints
+    if not blueprint:
+        return
+    accepted = set(writing_task.required_execution_beat_ids())
+    required = accepted
+    executed = tuple(beat.beat_ref for beat in work_plan.execution_beats)
+    budgets = tuple(beat.expected_characters for beat in work_plan.execution_beats)
+    declared_total = work_plan.expected_total_characters
+    if declared_total is None:
+        raise WriterCognitionError(
+            "an execution WorkPlan must declare its expected total characters"
+        )
+    try:
+        validate_execution_allocation(
+            accepted_beat_ids={item.root for item in accepted},
+            required_beat_ids={item.root for item in required},
+            executed_refs=executed,
+            expected_characters=budgets,
+            declared_total=declared_total,
+            minimum_characters=writing_task.length_policy.minimum_characters,
+            maximum_characters=writing_task.length_policy.maximum_characters,
+        )
+    except ValueError as error:
+        raise WriterCognitionError(f"WriterWorkPlan execution coverage failed: {error}") from error
 
 
 def candidate_surface_error(
@@ -182,6 +387,7 @@ def candidate_surface_error(
     allowed_language_tokens: tuple[str, ...] = (),
     forbidden_reveals: tuple[str, ...] = (),
     recent_prose: tuple[tuple[str, bool], ...] = (),
+    provider_finished_by_length: bool = False,
 ) -> str | None:
     """Shared hard surface gate for Writer output, Editor repair, and materialization."""
 
@@ -220,6 +426,7 @@ def candidate_surface_error(
         allowed_language_tokens=allowed_language_tokens,
         forbidden_reveals=forbidden_reveals,
         recent_prose=recent_prose,
+        provider_finished_by_length=provider_finished_by_length,
     )
 
 
@@ -230,6 +437,7 @@ def _writer_draft_surface_error(
     target_language: str | None = None,
     allowed_language_tokens: tuple[str, ...] = (),
     forbidden_reveals: tuple[str, ...] = (),
+    provider_finished_by_length: bool = False,
 ) -> str | None:
     """Reject only demonstrated model surface failures before editorial review."""
 
@@ -252,6 +460,7 @@ def _writer_draft_surface_error(
         allowed_language_tokens=allowed_language_tokens,
         forbidden_reveals=forbidden_reveals,
         recent_prose=tuple(recent_prose),
+        provider_finished_by_length=provider_finished_by_length,
     )
 
 
@@ -476,6 +685,13 @@ class WriterCognitionService:
                 "selected_skill_ids": normalized_skill_ids,
                 "expected_skill_checkpoints": filtered_checkpoints,
             }
+        )
+        # Second readiness check: the accepted execution blueprint is the
+        # narrative skeleton, so the WorkPlan must cover every required beat
+        # inside the chapter's length policy before the Writer is called.
+        validate_work_plan_execution(
+            work_plan,
+            request.writing_task,
         )
         work_plan_ref = self._artifacts.put(
             canonical_json_bytes(work_plan.model_dump(mode="json")),

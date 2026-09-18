@@ -65,6 +65,8 @@ from novel_agent.domain.planning import (
     PlanningLoopTerminal,
     PlanningProblemIdentitySeed,
     PlanningProvenance,
+    PlanningQuestion,
+    PlanningQuestionDraft,
     PlanningTurnAction,
     PlanningTurnOutput,
     PlanReview,
@@ -1884,6 +1886,26 @@ def _model_request(stage: str, mode: AgentMode, attempt: int) -> ModelRequest:
     return cast(ModelRequest, object())
 
 
+def _provider_question(question: PlanningQuestion) -> PlanningQuestionDraft:
+    """Project a canonical question onto the provider-facing schema.
+
+    The provider schema deliberately omits the host-owned boundary semantics
+    (purpose, dependency expectation and plan origin), so a model response can
+    never carry them.
+    """
+
+    return PlanningQuestionDraft(
+        kind=question.kind,
+        question=question.question,
+        goal_id=question.goal_id,
+        entity_labels=question.entity_labels,
+        relation_subject=question.relation_subject,
+        relation_predicate=question.relation_predicate,
+        relation_object=question.relation_object,
+        blocking=question.blocking,
+    )
+
+
 def _inquiry_draft(mode: AgentMode, source: ArtifactRef) -> PlanningInquiryDraft:
     inquiry = _inquiry(mode, source)
     return PlanningInquiryDraft(
@@ -1892,8 +1914,8 @@ def _inquiry_draft(mode: AgentMode, source: ArtifactRef) -> PlanningInquiryDraft
         horizon_start=inquiry.horizon_start,
         horizon_end=inquiry.horizon_end,
         goal_proposals=inquiry.goal_proposals,
-        assumptions=inquiry.assumptions,
-        questions=inquiry.questions,
+        assumptions=tuple(_provider_question(item) for item in inquiry.assumptions),
+        questions=tuple(_provider_question(item) for item in inquiry.questions),
         expected_output_shape=inquiry.expected_output_shape,
         human_choices=("author choice",),
     )

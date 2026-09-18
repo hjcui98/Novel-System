@@ -22,6 +22,7 @@ from novel_agent.agents.planner import (
     _ModelPlannerProposalDraft,
     _ModelPlanningTurnDraft,
     _unresolved_issue_id,
+    validate_history_retrieval_contract,
 )
 from novel_agent.domain.artifacts import ArtifactRef
 from novel_agent.domain.ids import (
@@ -815,9 +816,14 @@ def test_chapter_set_prompt_binds_each_horizon_chapter_to_a_goal() -> None:
     )
 
     assert "PLANNING_TASK.creative_scope" in prompt
-    assert "exactly one `plan_items` entry" in prompt
+    # V2 1+N: one semantic chapter-set parent plus one honest outline per chapter.
+    assert "1 个语义章集父项 + N 个章纲子项" in prompt
+    assert '"chapter-set.v2"' in prompt
+    assert '"chapter.v2"' in prompt
     assert "`chapter_index` integer" in prompt
-    assert "non-empty `summary` string" in prompt
+    assert "non-empty `summary`" in prompt
+    assert "`chapter_node_id`" in prompt
+    assert "`parent_set_binding`" in prompt
     assert "`project_intent_items: []`" in prompt
     assert "`strategy: null`" in prompt
     assert "Put missing historical details in `unresolved`" in prompt
@@ -921,3 +927,71 @@ def test_proposed_item_lifts_nested_source_ids_from_payload() -> None:
     )
     assert "source_ids" not in item.payload
     assert item.payload == {"summary": "hero premise"}
+
+
+def _chapter_history_item(chapter_index: int, source_chapter_end: int) -> ProposedItem:
+    return ProposedItem(
+        item_id=StableId(f"plan.chapter.{chapter_index}"),
+        kind="goal",
+        payload={
+            "chapter_index": chapter_index,
+            "summary": f"第 {chapter_index} 章的调查推进。",
+            "history_retrieval": {
+                "requirement": "REQUIRED",
+                "needs": [
+                    {
+                        "kind": "causal_history",
+                        "query": "上一章已经发生了什么？",  # noqa: RUF001
+                        "source_chapter_end": source_chapter_end,
+                    }
+                ],
+            },
+        },
+        provenance=ProposalProvenance.PLANNER_PROPOSED,
+    )
+
+
+def test_history_need_must_respect_the_committed_text_cutoff() -> None:
+    """Q08: ``source_chapter_end < target`` is not enough on its own.
+
+    At a committed-text cutoff of 5, chapter 10's history Need cannot read
+    chapter 9: 9 is before the target but has never been committed.  The model
+    boundary cannot see the cutoff, so the host repeats the whole check with
+    it.
+    """
+
+    items = (_chapter_history_item(10, 9),)
+
+    # The provider-boundary check accepts the shape: 9 < 10.
+    validate_history_retrieval_contract(items, mode=AgentMode.CHAPTER_SET)
+
+    with pytest.raises(ValueError, match="committed text cutoff 5"):
+        validate_history_retrieval_contract(
+            items,
+            mode=AgentMode.CHAPTER_SET,
+            committed_text_cutoff=5,
+        )
+
+    in_range = (_chapter_history_item(10, 5),)
+    validate_history_retrieval_contract(
+        in_range,
+        mode=AgentMode.CHAPTER_SET,
+        committed_text_cutoff=5,
+    )
+
+    with pytest.raises(ValueError, match="must end before the target chapter"):
+        validate_history_retrieval_contract(
+            (_chapter_history_item(6, 6),),
+            mode=AgentMode.CHAPTER_SET,
+            committed_text_cutoff=5,
+        )
+
+
+def test_history_retrieval_contract_only_applies_to_chapter_sets() -> None:
+    """A STORY/ARC_VOLUME proposal carries no per-chapter history contract."""
+
+    validate_history_retrieval_contract(
+        (_chapter_history_item(10, 9),),
+        mode=AgentMode.STORY,
+        committed_text_cutoff=5,
+    )

@@ -1025,7 +1025,20 @@ class MemoryRepairFinding(DomainModel):
     target_root_kind: RootKind
     repair_scope: RepairScope
     budget: MemoryWriteBudget = Field(default_factory=MemoryWriteBudget)
+    # ``no_progress_key`` is the durable dedup identity of the *problem*, not of
+    # the attempt that reported it.  It deliberately excludes run and attempt
+    # identity: a retried Planner that hits the same unrepaired problem on the
+    # same frozen source must not queue a second identical maintenance task.
+    # It does include the source-evidence digest, so a genuinely changed
+    # projection or an extended retrieval scope yields a new opportunity.
     no_progress_key: StableId
+    # Attempt-scoped audit identity.  It is not a dedup key; it exists so the
+    # original incident stays traceable after a stable key is reused.
+    attempt_problem_key: StableId | None = None
+    # The facet group this finding is responsible for.  A mixed problem is
+    # split into one finding per owner, each carrying only the facets that
+    # owner can actually repair.  Empty preserves legacy single-owner findings.
+    owned_facet_ids: tuple[StableId, ...] = ()
 
     @model_validator(mode="after")
     def validate_finding(self) -> MemoryRepairFinding:

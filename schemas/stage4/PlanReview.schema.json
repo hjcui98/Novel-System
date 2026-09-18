@@ -557,7 +557,12 @@
         "volume_structure_incomplete",
         "obligation_contract",
         "unresolved_scope_missing",
-        "volume_stage_window_violation"
+        "volume_stage_window_violation",
+        "unsupported_plan_precondition",
+        "chapter_set_semantic_gap",
+        "parent_child_correspondence",
+        "execution_coverage",
+        "planned_introduction_responsibility"
       ],
       "title": "ReviewIssueKind",
       "type": "string"

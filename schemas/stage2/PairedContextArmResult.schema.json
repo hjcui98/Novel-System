@@ -1921,6 +1921,19 @@
           "title": "Compiled Query Bundle",
           "type": "object"
         },
+        "dependency_expectation": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Dependency Expectation"
+        },
         "direct_unit_ids": {
           "default": [],
           "items": {
@@ -2045,6 +2058,19 @@
           },
           "title": "Query Unavailable Reasons",
           "type": "object"
+        },
+        "question_purpose": {
+          "anyOf": [
+            {
+              "minLength": 1,
+              "type": "string"
+            },
+            {
+              "type": "null"
+            }
+          ],
+          "default": null,
+          "title": "Question Purpose"
         },
         "required_need_facet_ids": {
           "default": [],

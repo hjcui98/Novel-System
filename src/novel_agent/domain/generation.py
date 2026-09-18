@@ -21,6 +21,7 @@ from novel_agent.domain.ids import (
     TaskId,
 )
 from novel_agent.domain.model_calls import ModelCallRecord
+from novel_agent.domain.plan_detail import PlannedIntroduction, PlanParticipant, SceneBlueprint
 from novel_agent.domain.stage2 import (
     AgentExecutionReceipt,
     AgentMode,
@@ -218,6 +219,44 @@ class WritingTaskContract(DomainModel):
     obligation_actions: tuple[_NonEmptyText, ...] = ()
     length_policy: WritingLengthPolicy
     blocking_gaps: tuple[_NonEmptyText, ...] = ()
+    # Structured execution detail compiled from an accepted V2 chapter.  The
+    # fields stay optional so every historical contract remains readable; when
+    # present they carry the accepted scene and beat identities the Writer must
+    # actually cover, and the WorkPlan is checked against them.
+    scene_blueprints: tuple[SceneBlueprint, ...] = ()
+    # Planned participants are plan identities, not Canon entities.  They are
+    # kept out of ``participating_entity_ids`` so an unknown-entity check never
+    # mistakes a plan-local reference for a World fact.
+    planned_participants: tuple[PlanParticipant, ...] = ()
+    planned_introductions: tuple[PlannedIntroduction, ...] = ()
+
+    @model_validator(mode="after")
+    def validate_execution_blueprint(self) -> WritingTaskContract:
+        # The planned channel is plan-only: refuse a Canon claim before any
+        # other planned-channel consistency check, so the reported reason names
+        # the real defect.
+        if any(item.reference_kind != "planned" for item in self.planned_participants):
+            raise ValueError("Writer planned participants cannot claim a Canon entity")
+        if self.scene_blueprints:
+            scene_ids = [scene.scene_id for scene in self.scene_blueprints]
+            if len(set(scene_ids)) != len(scene_ids):
+                raise ValueError("Writer scene blueprint ids must be unique")
+            beat_ids = self.required_execution_beat_ids()
+            if len(set(beat_ids)) != len(beat_ids):
+                raise ValueError("Writer execution beat ids must be unique")
+            declared_introductions = {item.introduction_id for item in self.planned_introductions}
+        declared_introductions = {item.introduction_id for item in self.planned_introductions}
+        for participant in self.planned_participants:
+            if participant.introduction_ref not in declared_introductions:
+                raise ValueError(
+                    "a planned participant must name an introduction this chapter set declares"
+                )
+        return self
+
+    def required_execution_beat_ids(self) -> tuple[StableId, ...]:
+        """Return every accepted execution beat the chapter must cover."""
+
+        return tuple(beat.beat_id for scene in self.scene_blueprints for beat in scene.beats)
 
     @model_validator(mode="after")
     def validate_targets(self) -> WritingTaskContract:

@@ -33,6 +33,7 @@ from novel_agent.domain.planning import (
     ReviewDecision,
     ReviewTargetKind,
 )
+from novel_agent.domain.planning_gap import QuestionPurpose
 from novel_agent.domain.planning_memory import (
     EntityMention,
     GroundedNeedDraft,
@@ -55,6 +56,10 @@ from novel_agent.tools.retrieval import POOL_BY_CHANNEL
 
 _FAMILY_SUFFIXES = ("家", "族", "氏")
 _RELATION_BACKED_STATE_PREDICATES = frozenset({"location", "residence"})
+
+#: Audit reason recorded when a reviewed question designs future content.  It
+#: is a rejection of the Memory route, not a claim that the design is wrong.
+DESIGN_FUTURE_REJECTION_REASON = "future_design_is_a_plan_action_not_a_historical_fact"
 
 
 class PlanningInquiryNeedError(ValueError):
@@ -181,6 +186,15 @@ class PlanningInquiryConditionedNeedGenerator:
         for question in questions:
             if question.kind is PlanningQuestionKind.HUMAN_CHOICE:
                 rejected[question.question_id.root] = "human_choice_is_not_a_memory_fact"
+                continue
+            if question.question_purpose is QuestionPurpose.DESIGN_FUTURE:
+                # A question that designs future content is not a historical
+                # fact request.  It stays visible in the rejection ledger with
+                # its reason instead of being silently filtered, so the
+                # planning loop can carry the design intent back to the
+                # Planner rather than searching Memory for something the
+                # reviewed material never asserted.
+                rejected[question.question_id.root] = DESIGN_FUTURE_REJECTION_REASON
                 continue
             goal = goal_by_id.get(question.goal_id)
             if goal is None:
@@ -741,6 +755,14 @@ class PlanningInquiryConditionedNeedGenerator:
             planner_artifact_ref=inquiry_ref.artifact_id,
             planned_draft_id=grounded.draft_id,
             validated_need_set_hash=validated_hash,
+            question_purpose=(
+                None if question.question_purpose is None else question.question_purpose.value
+            ),
+            dependency_expectation=(
+                None
+                if question.dependency_expectation is None
+                else question.dependency_expectation.value
+            ),
         )
 
     @staticmethod
